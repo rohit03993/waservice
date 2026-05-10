@@ -40,6 +40,33 @@ from app.services.template_preview import build_template_preview_from_stored
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 webhook_router = APIRouter(tags=["webhook"])
 
+_MEDIA_MESSAGE_TYPES = frozenset({"image", "document", "sticker", "video", "audio"})
+
+
+def _extract_waba_media_id(message_type: str, payload: dict | None) -> str | None:
+    if not payload or message_type not in _MEDIA_MESSAGE_TYPES:
+        return None
+    block = payload.get(message_type)
+    if not isinstance(block, dict):
+        return None
+    mid = block.get("id")
+    return mid.strip() if isinstance(mid, str) and mid.strip() else None
+
+
+def _media_content_disposition(message_type: str, payload: dict | None) -> str | None:
+    """Return Content-Disposition value or None to omit."""
+    if message_type == "document" and payload:
+        block = payload.get("document")
+        if isinstance(block, dict):
+            fn = block.get("filename")
+            if isinstance(fn, str) and fn.strip():
+                safe = fn.strip().replace('"', "").replace("\r", "").replace("\n", "")
+                if safe:
+                    return f'inline; filename="{safe}"'
+    if message_type in ("image", "sticker", "video", "audio"):
+        return "inline"
+    return None
+
 
 def _positional_placeholder_order(body_text: str) -> list[int]:
     """Unique {{n}} indices in order of first appearance left-to-right."""
@@ -713,6 +740,39 @@ def list_messages(
             }
         )
     return out
+
+
+@router.get("/messages/{message_id}/media")
+async def get_message_media(
+    message_id: UUID,
+    membership: Membership = Depends(get_admin_or_agent_membership),
+    db: Session = Depends(get_db),
+) -> Response:
+    msg = (
+        db.query(Message)
+        .filter(Message.id == message_id, Message.tenant_id == membership.tenant_id)
+        .first()
+    )
+    if not msg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    payload = dict(msg.payload) if isinstance(msg.payload, dict) else {}
+    media_id = _extract_waba_media_id(msg.type, payload)
+    if not media_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No media for this message")
+    connection = _resolve_connection(db=db, tenant_id=membership.tenant_id)
+    token = decrypt_secret(connection.access_token) or ""
+    if not token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WhatsApp access token not configured")
+    try:
+        content, mime = await MetaClient.download_media(media_id=media_id, access_token=token)
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not download media from Meta",
+        ) from error
+    disp = _media_content_disposition(msg.type, payload)
+    headers = {"Content-Disposition": disp} if disp else {}
+    return Response(content=content, media_type=mime, headers=headers)
 
 
 @router.post("/reply-text")

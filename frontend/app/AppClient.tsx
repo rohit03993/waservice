@@ -95,20 +95,58 @@ type DashboardSection = "contacts" | "campaigns" | "templates" | "inbox" | "sett
 type PageMode = "root" | "auth" | "dashboard";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1";
+/** Dark CRM surfaces — high contrast black / zinc / yellow */
 const INPUT_CLASS =
-  "w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100";
-const CARD_CLASS = "rounded-2xl border border-slate-200 bg-white p-4 shadow-sm";
+  "w-full rounded-xl border border-zinc-600 bg-black/50 px-3 py-2.5 text-sm text-white placeholder:text-zinc-500 outline-none transition focus:border-crm-accent focus:ring-2 focus:ring-crm-accent/25";
+const CARD_CLASS =
+  "rounded-2xl border border-crm-border bg-crm-elevated/95 p-4 shadow-lg shadow-black/40 backdrop-blur-sm";
+/** Light inputs for auth cards (dark text on white) */
+const INPUT_AUTH_LIGHT =
+  "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm text-zinc-900 placeholder:text-zinc-400 outline-none transition focus:border-crm-accent-dim focus:ring-2 focus:ring-yellow-200";
 /** Compact table / toolbar actions */
 const BTN_ROW =
-  "inline-flex min-h-[2rem] min-w-[4.5rem] items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-55";
+  "inline-flex min-h-[2rem] min-w-[4.5rem] items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crm-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-crm-void disabled:pointer-events-none disabled:opacity-55";
 const BTN_PRIMARY =
-  "inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-55";
+  "inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl bg-crm-accent px-4 py-2 text-sm font-bold text-black shadow-md shadow-crm-accent/20 transition hover:bg-crm-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crm-accent focus-visible:ring-offset-2 focus-visible:ring-offset-crm-void disabled:pointer-events-none disabled:opacity-55";
 const BTN_PRIMARY_BLUE =
-  "inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-55";
+  "inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl bg-crm-accent px-4 py-2 text-sm font-bold text-black shadow-md shadow-crm-accent/20 transition hover:bg-crm-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crm-accent focus-visible:ring-offset-2 focus-visible:ring-offset-crm-void disabled:pointer-events-none disabled:opacity-55";
 const BTN_SUCCESS =
-  "inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-55";
+  "inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl bg-lime-500 px-4 py-2 text-sm font-bold text-black shadow-md transition hover:bg-lime-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-400 focus-visible:ring-offset-2 focus-visible:ring-offset-crm-void disabled:pointer-events-none disabled:opacity-55";
 const BTN_SECONDARY =
-  "inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-55";
+  "inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl border border-zinc-500 bg-zinc-800/80 px-4 py-2 text-sm font-semibold text-zinc-100 shadow-sm transition hover:border-crm-accent/50 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crm-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-crm-void disabled:pointer-events-none disabled:opacity-55";
+
+/**
+ * Display name + URL slug derived from email.
+ * Slug includes sanitized local + domain so two different emails rarely collide (e.g. a@acme.com vs a@other.com).
+ * Uniqueness is still enforced on the server — rare slug clashes can be fixed via "Customize".
+ */
+function deriveWorkspaceFromEmail(emailRaw: string): { name: string; slug: string } {
+  const email = emailRaw.trim().toLowerCase();
+  const at = email.indexOf("@");
+  if (at < 1 || at === email.length - 1) {
+    return { name: "My workspace", slug: "workspace" };
+  }
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const domainSlug = domain
+    .replace(/[^a-z0-9.]+/g, "-")
+    .replace(/\./g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  const localSlug = local
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  const slug = [localSlug || "user", domainSlug || "workspace"].join("-").slice(0, 120);
+
+  const words = local.replace(/[._-]+/g, " ").trim().split(/\s+/).filter(Boolean);
+  const name =
+    words.length > 0
+      ? `${words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")} workspace`.slice(0, 120)
+      : "My workspace";
+
+  return { name, slug };
+}
 
 /** WABA costs in INR; Meta bucket timestamps interpreted in IST for display (avoids UTC midnight looking “wrong”). */
 const META_BILLING_LOCALE = "en-IN";
@@ -212,6 +250,119 @@ function formatApiErrorBody(text: string, status: number): string {
   return trimmed;
 }
 
+const INBOX_MEDIA_TYPES = new Set(["image", "document", "sticker", "video", "audio"]);
+
+function inboxMediaPlaceholderOnly(messageType: string, display: string): boolean {
+  if (messageType === "image" && display === "[Image]") return true;
+  if (messageType === "sticker" && display === "[Sticker]") return true;
+  if (messageType === "video" && display === "[Video]") return true;
+  if (messageType === "audio" && display === "[Audio]") return true;
+  if (messageType === "document" && (display === "[Document]" || display.startsWith("[Document:"))) return true;
+  return false;
+}
+
+function InboxMessageMedia({
+  messageId,
+  messageType,
+  authToken,
+  direction
+}: {
+  messageId: string;
+  messageType: string;
+  authToken: string;
+  direction: string;
+}) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const urlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!authToken) {
+      setLoading(false);
+      setError("Session required.");
+      return;
+    }
+    let cancelled = false;
+
+    (async () => {
+      setLoading(true);
+      setError(null);
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+        urlRef.current = null;
+      }
+      setBlobUrl(null);
+      try {
+        const res = await fetch(`${API_BASE}/whatsapp/messages/${messageId}/media`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(formatApiErrorBody(text, res.status));
+        }
+        const blob = await res.blob();
+        const u = URL.createObjectURL(blob);
+        if (cancelled) {
+          URL.revokeObjectURL(u);
+          return;
+        }
+        urlRef.current = u;
+        setBlobUrl(u);
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+        urlRef.current = null;
+      }
+    };
+  }, [messageId, messageType, authToken]);
+
+  const muted = direction === "outbound" ? "text-black/70" : "text-zinc-500";
+  if (loading) {
+    return (
+      <p className={`flex items-center gap-1.5 text-xs ${muted}`}>
+        <Spinner className="h-3.5 w-3.5" /> Loading…
+      </p>
+    );
+  }
+  if (error) {
+    return <p className="text-xs text-rose-400/90">{error}</p>;
+  }
+  if (!blobUrl) return null;
+
+  if (messageType === "image" || messageType === "sticker") {
+    return <img src={blobUrl} alt="" className="mt-1 max-h-56 max-w-full rounded-lg object-contain" />;
+  }
+  if (messageType === "video") {
+    return <video src={blobUrl} controls className="mt-1 max-h-64 max-w-full rounded-lg" />;
+  }
+  if (messageType === "audio") {
+    return <audio src={blobUrl} controls className="mt-2 w-full max-w-[min(100%,20rem)]" />;
+  }
+  if (messageType === "document") {
+    return (
+      <a
+        href={blobUrl}
+        download
+        target="_blank"
+        rel="noreferrer"
+        className={`mt-1 inline-flex text-sm font-medium underline ${direction === "outbound" ? "text-black" : "text-crm-accent"}`}
+      >
+        Open document
+      </a>
+    );
+  }
+  return null;
+}
+
 /** Tailwind classes for Meta template review status badges (approved / pending / not approved). */
 function templateStatusBadgeClass(status: string | null | undefined): string {
   const s = (status || "").trim().toUpperCase();
@@ -227,7 +378,7 @@ function templateStatusBadgeClass(status: string | null | undefined): string {
     s.includes("REVIEW") ||
     s === "DRAFT";
   if (pendingLike) {
-    return `${base} bg-slate-200 text-slate-700 ring-slate-300/90`;
+    return `${base} bg-zinc-700 text-zinc-200 ring-zinc-500/90`;
   }
   return `${base} bg-rose-100 text-rose-800 ring-rose-200/90`;
 }
@@ -286,8 +437,8 @@ type InboxBubbleVariant = "inbound" | "outbound";
 function formatWhatsAppLine(line: string, lineKey: number, variant: InboxBubbleVariant): ReactNode {
   const codeClass =
     variant === "outbound"
-      ? "rounded bg-white/20 px-1 py-0.5 font-mono text-[0.92em] text-blue-50"
-      : "rounded bg-slate-200/90 px-1 py-0.5 font-mono text-[0.92em] text-slate-900";
+      ? "rounded bg-black/10 px-1 py-0.5 font-mono text-[0.92em] text-zinc-900"
+      : "rounded bg-zinc-700/90 px-1 py-0.5 font-mono text-[0.92em] text-zinc-100";
 
   const chunks: ReactNode[] = [];
   let i = 0;
@@ -410,11 +561,29 @@ type FeedbackSlot =
   | "inboxThread"
   | "metaPricing";
 
-function InlineFeedbackText({ feedback, className = "" }: { feedback: InlineFeedback | undefined; className?: string }) {
+function InlineFeedbackText({
+  feedback,
+  className = "",
+  surface = "dark"
+}: {
+  feedback: InlineFeedback | undefined;
+  className?: string;
+  surface?: "light" | "dark";
+}) {
   if (!feedback) return null;
-  const tone = feedback.variant === "success" ? "text-emerald-800" : "text-rose-800";
+  const tone =
+    surface === "light"
+      ? feedback.variant === "success"
+        ? "text-emerald-900 border-emerald-200 bg-emerald-50"
+        : "text-red-900 border-red-200 bg-red-50"
+      : feedback.variant === "success"
+        ? "text-lime-400 border-lime-500/40 bg-lime-500/10"
+        : "text-red-300 border-red-500/40 bg-red-500/10";
   return (
-    <p role="status" className={`mt-2 text-sm font-medium ${tone} ${className}`.trim()}>
+    <p
+      role="status"
+      className={`mt-2 rounded-lg border px-3 py-2 text-sm font-medium ${tone} ${className}`.trim()}
+    >
       {feedback.text}
     </p>
   );
@@ -429,8 +598,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [token, setToken] = useState(() => (typeof window !== "undefined" ? window.localStorage.getItem("auth_token") || "" : ""));
   const [email, setEmail] = useState(() => (typeof window !== "undefined" ? window.localStorage.getItem("auth_email") || "" : ""));
   const [password, setPassword] = useState("");
-  const [tenantName, setTenantName] = useState("Demo Tenant");
-  const [tenantSlug, setTenantSlug] = useState("demo-tenant");
+  const [authPanel, setAuthPanel] = useState<"login" | "register">("login");
+  const [registerCustomizeWorkspace, setRegisterCustomizeWorkspace] = useState(false);
+  const [tenantName, setTenantName] = useState("");
+  const [tenantSlug, setTenantSlug] = useState("");
   const [tagName, setTagName] = useState("");
   const [tags, setTags] = useState<Tag[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -576,6 +747,14 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
   }, [email]);
 
+  /** Auto workspace name + slug from email unless user opened "Customize". */
+  useEffect(() => {
+    if (authPanel !== "register" || registerCustomizeWorkspace) return;
+    const { name, slug } = deriveWorkspaceFromEmail(email);
+    setTenantName(name);
+    setTenantSlug(slug);
+  }, [email, authPanel, registerCustomizeWorkspace]);
+
   useEffect(() => {
     setActiveTab(normalizedInitialSection);
   }, [normalizedInitialSection]);
@@ -652,21 +831,40 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
   async function handleRegister(event: FormEvent) {
     event.preventDefault();
+    const emailTrim = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrim)) {
+      flash("authRegister", "Enter a valid email address.", "error");
+      return;
+    }
+    const { name: derivedName, slug: derivedSlug } = deriveWorkspaceFromEmail(emailTrim);
+    const name = registerCustomizeWorkspace ? tenantName.trim() : derivedName;
+    const slug = (registerCustomizeWorkspace ? tenantSlug : derivedSlug).trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+    if (slug.length < 3) {
+      flash("authRegister", "Workspace ID is too short. Use Customize to set a longer slug.", "error");
+      return;
+    }
     try {
       const data = await apiRequest<{ access_token: string }>("/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email,
+          email: emailTrim,
           password,
-          tenant_name: tenantName,
-          tenant_slug: tenantSlug
+          tenant_name: name || derivedName,
+          tenant_slug: slug
         })
       });
       setToken(data.access_token);
       router.push("/dashboard/contacts");
     } catch (error) {
-      flash("authRegister", (error as Error).message, "error");
+      const msg = (error as Error).message;
+      flash(
+        "authRegister",
+        msg.includes("slug") || msg.includes("Tenant")
+          ? `${msg} You can open “Customize name & ID” and change the workspace ID.`
+          : msg,
+        "error"
+      );
     }
   }
 
@@ -1520,10 +1718,15 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
   if (isRedirecting) {
     return (
-      <main className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-blue-50 p-6">
+      <main className="min-h-screen bg-gradient-to-b from-crm-surface via-crm-void to-black p-6">
         <div className="mx-auto max-w-7xl">
-          <section className={`${CARD_CLASS} flex items-center justify-center py-16`}>
-            <p className="text-sm text-slate-500">Loading...</p>
+          <section
+            className={`flex items-center justify-center rounded-2xl border border-crm-border bg-crm-elevated/80 py-20 shadow-glow`}
+          >
+            <div className="flex flex-col items-center gap-3">
+              <Spinner className="h-8 w-8 text-crm-accent" />
+              <p className="text-sm font-medium text-zinc-300">Loading workspace…</p>
+            </div>
           </section>
         </div>
       </main>
@@ -1531,19 +1734,30 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-blue-50 p-6">
+    <main className="min-h-screen bg-gradient-to-b from-crm-surface via-crm-void to-black p-4 sm:p-6">
       <div className="mx-auto max-w-7xl space-y-6">
-        <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/90 p-5 shadow-sm">
+        <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-crm-accent/20 bg-crm-elevated/90 p-5 shadow-glow backdrop-blur-md">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">WhatsApp SaaS CRM</h1>
-            <p className="text-xs text-slate-500">API base: {API_BASE}</p>
+            <h1 className="text-2xl font-bold tracking-tight text-white">
+              WhatsApp <span className="text-crm-accent">CRM</span>
+            </h1>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              API: <code className="rounded bg-black/50 px-1.5 py-0.5 text-zinc-400">{API_BASE}</code>
+            </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className={`rounded-full px-3 py-1 text-xs font-medium ${token ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
-              {token ? "Authenticated" : "Not Authenticated"}
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                token ? "bg-lime-500/20 text-lime-400 ring-1 ring-lime-500/30" : "bg-zinc-800 text-zinc-400 ring-1 ring-zinc-600"
+              }`}
+            >
+              {token ? "Signed in" : "Guest"}
             </span>
             {token && (
-              <button className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50" onClick={handleLogout}>
+              <button
+                className="rounded-xl border border-zinc-600 bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:border-crm-accent/50 hover:text-crm-accent"
+                onClick={handleLogout}
+              >
                 Logout
               </button>
             )}
@@ -1551,36 +1765,167 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
         </header>
 
         {showAuth ? (
-          <section className="mx-auto grid max-w-5xl gap-6 rounded-2xl border border-slate-200 bg-white/95 p-6 shadow-md md:grid-cols-2">
-            <form onSubmit={handleLogin} className={`${CARD_CLASS} space-y-3 bg-slate-50/60`}>
-              <h2 className="text-lg font-semibold text-slate-900">Welcome back</h2>
-              <p className="text-xs text-slate-500">Sign in to access contacts, campaigns and message logs.</p>
-              <input className={INPUT_CLASS} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-              <input className={INPUT_CLASS} type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
-              <button className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800" type="submit">
-                Login
+          <div className="mx-auto max-w-lg space-y-6">
+            <div className="text-center">
+              <p className="text-sm text-zinc-400">Secure access to your WhatsApp workspace</p>
+            </div>
+            <div className="flex rounded-2xl border border-crm-border bg-crm-elevated/50 p-1 shadow-inner">
+              <button
+                type="button"
+                className={`flex-1 rounded-xl py-3 text-sm font-bold transition ${
+                  authPanel === "login"
+                    ? "bg-crm-accent text-black shadow-md"
+                    : "text-zinc-400 hover:text-white"
+                }`}
+                onClick={() => setAuthPanel("login")}
+              >
+                Sign in
               </button>
-              <InlineFeedbackText feedback={inlineFeedback.authLogin} />
-            </form>
+              <button
+                type="button"
+                className={`flex-1 rounded-xl py-3 text-sm font-bold transition ${
+                  authPanel === "register"
+                    ? "bg-crm-accent text-black shadow-md"
+                    : "text-zinc-400 hover:text-white"
+                }`}
+                onClick={() => {
+                  setRegisterCustomizeWorkspace(false);
+                  setAuthPanel("register");
+                }}
+              >
+                Create account
+              </button>
+            </div>
 
-            <form onSubmit={handleRegister} className={`${CARD_CLASS} space-y-3 border-blue-200 bg-blue-50/40`}>
-              <h2 className="text-lg font-semibold text-slate-900">Create workspace</h2>
-              <p className="text-xs text-slate-500">First-time setup for your tenant account.</p>
-              <input className={INPUT_CLASS} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-              <input className={INPUT_CLASS} type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
-              <input className={INPUT_CLASS} placeholder="Tenant Name" value={tenantName} onChange={(e) => setTenantName(e.target.value)} />
-              <input className={INPUT_CLASS} placeholder="Tenant Slug (example: acme-team)" value={tenantSlug} onChange={(e) => setTenantSlug(e.target.value)} />
-              <button className="w-full rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700" type="submit">
-                Register
-              </button>
-              <InlineFeedbackText feedback={inlineFeedback.authRegister} />
-            </form>
-          </section>
+            {authPanel === "login" ? (
+              <form
+                onSubmit={handleLogin}
+                className="space-y-4 rounded-2xl border border-crm-border bg-white p-6 shadow-xl shadow-black/50"
+              >
+                <div>
+                  <h2 className="text-xl font-bold text-zinc-900">Welcome back</h2>
+                  <p className="mt-1 text-sm text-zinc-600">Use the email and password for your workspace.</p>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Email</label>
+                  <input
+                    className={INPUT_AUTH_LIGHT}
+                    placeholder="you@company.com"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Password</label>
+                  <input
+                    className={INPUT_AUTH_LIGHT}
+                    type="password"
+                    placeholder="Your password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </div>
+                <button
+                  className="w-full rounded-xl bg-black py-3 text-sm font-bold text-crm-accent transition hover:bg-zinc-900"
+                  type="submit"
+                >
+                  Sign in
+                </button>
+                <InlineFeedbackText surface="light" feedback={inlineFeedback.authLogin} />
+              </form>
+            ) : (
+              <form
+                onSubmit={handleRegister}
+                className="space-y-4 rounded-2xl border-2 border-crm-accent/40 bg-zinc-900 p-6 shadow-xl shadow-crm-accent/10"
+              >
+                <div>
+                  <h2 className="text-xl font-bold text-white">Create workspace</h2>
+                  <p className="mt-1 text-sm text-zinc-400">
+                    One account per organization. You’ll sign in with this email after registration.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-crm-accent">Email</label>
+                  <input
+                    className={INPUT_CLASS}
+                    placeholder="you@company.com"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-crm-accent">Password</label>
+                  <input
+                    className={INPUT_CLASS}
+                    type="password"
+                    placeholder="At least 8 characters recommended"
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <p className="text-[11px] text-zinc-500">Use a strong password; it protects your WhatsApp data.</p>
+                </div>
+                {email.includes("@") && (
+                  <div className="rounded-xl border border-zinc-600 bg-black/35 px-3 py-3 text-xs leading-relaxed text-zinc-400">
+                    <p>
+                      <span className="font-semibold text-crm-accent">Workspace name: </span>
+                      {tenantName || "—"}
+                    </p>
+                    <p className="mt-2">
+                      <span className="font-semibold text-crm-accent">Unique ID: </span>
+                      <code className="rounded bg-zinc-950 px-1.5 py-0.5 text-zinc-300">{tenantSlug || "…"}</code>
+                    </p>
+                    <p className="mt-2 text-[11px] text-zinc-500">
+                      We build these from your email (name + address). The ID must be unique — two workspaces cannot share it.
+                      Your login email is always unique per account.
+                    </p>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="text-left text-xs font-semibold text-crm-accent underline decoration-crm-accent/50 hover:text-crm-accent-hover"
+                  onClick={() => setRegisterCustomizeWorkspace((v) => !v)}
+                >
+                  {registerCustomizeWorkspace ? "Use automatic workspace from email" : "Customize name & unique ID"}
+                </button>
+                {registerCustomizeWorkspace && (
+                  <>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-crm-accent">Workspace name</label>
+                      <input
+                        className={INPUT_CLASS}
+                        placeholder="e.g. Acme Sales"
+                        value={tenantName}
+                        onChange={(e) => setTenantName(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-crm-accent">Unique workspace ID (slug)</label>
+                      <input
+                        className={INPUT_CLASS}
+                        placeholder="acme-team"
+                        value={tenantSlug}
+                        onChange={(e) => setTenantSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))}
+                      />
+                      <p className="text-[11px] text-zinc-500">Lowercase letters, numbers, hyphens only.</p>
+                    </div>
+                  </>
+                )}
+                <button className="w-full rounded-xl bg-crm-accent py-3 text-sm font-bold text-black transition hover:bg-crm-accent-hover" type="submit">
+                  Create workspace
+                </button>
+                <InlineFeedbackText feedback={inlineFeedback.authRegister} />
+              </form>
+            )}
+          </div>
         ) : (
           <>
             <section className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-zinc-500">
                   {statsSnapshotRefreshing && !statsUpdatedAt
                     ? "Loading workspace snapshot…"
                     : statsUpdatedAt
@@ -1604,43 +1949,43 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
                 <div className={`${CARD_CLASS} ${!statsSnapshotLoaded && statsSnapshotRefreshing ? "animate-pulse" : ""}`}>
-                  <p className="text-xs font-medium text-slate-500">Contacts</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{contacts.length}</p>
-                  <p className="mt-1 text-[11px] leading-snug text-slate-400">CRM records</p>
+                  <p className="text-xs font-medium text-zinc-500">Contacts</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">{contacts.length}</p>
+                  <p className="mt-1 text-[11px] leading-snug text-zinc-400">CRM records</p>
                 </div>
                 <div className={`${CARD_CLASS} ${!statsSnapshotLoaded && statsSnapshotRefreshing ? "animate-pulse" : ""}`}>
-                  <p className="text-xs font-medium text-slate-500">Open conversations</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{conversations.length}</p>
-                  <p className="mt-1 text-[11px] leading-snug text-slate-400">Inbox threads</p>
+                  <p className="text-xs font-medium text-zinc-500">Open conversations</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">{conversations.length}</p>
+                  <p className="mt-1 text-[11px] leading-snug text-zinc-400">Inbox threads</p>
                 </div>
                 <div className={`${CARD_CLASS} ${!statsSnapshotLoaded && statsSnapshotRefreshing ? "animate-pulse" : ""}`}>
-                  <p className="text-xs font-medium text-slate-500">Templates</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{templateItems.length}</p>
-                  <p className="mt-1 text-[11px] leading-snug text-slate-400">
+                  <p className="text-xs font-medium text-zinc-500">Templates</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">{templateItems.length}</p>
+                  <p className="mt-1 text-[11px] leading-snug text-zinc-400">
                     {approvedTemplateCount} approved
                   </p>
                 </div>
                 <div className={`${CARD_CLASS} ${!statsSnapshotLoaded && statsSnapshotRefreshing ? "animate-pulse" : ""}`}>
-                  <p className="text-xs font-medium text-slate-500">Running campaigns</p>
-                  <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{campaignStats.running}</p>
-                  <p className="mt-1 text-[11px] leading-snug text-slate-400">Active broadcasts</p>
+                  <p className="text-xs font-medium text-zinc-500">Running campaigns</p>
+                  <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">{campaignStats.running}</p>
+                  <p className="mt-1 text-[11px] leading-snug text-zinc-400">Active broadcasts</p>
                 </div>
                 <div className={`${CARD_CLASS} ${!statsSnapshotLoaded && statsSnapshotRefreshing ? "animate-pulse" : ""}`}>
-                  <p className="text-xs font-medium text-slate-500">Recipients sent</p>
+                  <p className="text-xs font-medium text-zinc-500">Recipients sent</p>
                   <p className="mt-1 text-2xl font-semibold tabular-nums text-emerald-700">{campaignStats.sent}</p>
-                  <p className="mt-1 text-[11px] leading-snug text-slate-400">Across all campaigns</p>
+                  <p className="mt-1 text-[11px] leading-snug text-zinc-400">Across all campaigns</p>
                 </div>
                 <div className={`${CARD_CLASS} ${!statsSnapshotLoaded && statsSnapshotRefreshing ? "animate-pulse" : ""}`}>
-                  <p className="text-xs font-medium text-slate-500">Recipients failed</p>
+                  <p className="text-xs font-medium text-zinc-500">Recipients failed</p>
                   <p className="mt-1 text-2xl font-semibold tabular-nums text-rose-700">{campaignStats.failed}</p>
-                  <p className="mt-1 text-[11px] leading-snug text-slate-400">Needs attention</p>
+                  <p className="mt-1 text-[11px] leading-snug text-zinc-400">Needs attention</p>
                 </div>
               </div>
             </section>
 
             <section className="grid gap-4 lg:grid-cols-[240px,1fr]">
               <aside className={`${CARD_CLASS} h-fit space-y-2 lg:sticky lg:top-6`}>
-                <p className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Workspace</p>
+                <p className="px-2 text-xs font-semibold uppercase tracking-wide text-crm-accent/80">Workspace</p>
                 {[
                   ["contacts", "Contacts", "CRM"],
                   ["campaigns", "Campaigns", "Broadcast"],
@@ -1649,8 +1994,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                 ].map(([key, label, hint]) => (
                   <button
                     key={key}
-                    className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium ${
-                      activeTab === key ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-100"
+                    className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium transition ${
+                      activeTab === key
+                        ? "bg-crm-accent text-black shadow-md shadow-crm-accent/20"
+                        : "text-zinc-300 hover:bg-zinc-800/80 hover:text-white"
                     }`}
                     onClick={() => {
                       const next = key as DashboardSection;
@@ -1659,10 +2006,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     }}
                   >
                     <div>{label}</div>
-                    <div className={`text-xs ${activeTab === key ? "text-slate-300" : "text-slate-400"}`}>{hint}</div>
+                    <div className={`text-xs ${activeTab === key ? "text-black/70" : "text-zinc-500"}`}>{hint}</div>
                   </button>
                 ))}
-                <p className="px-2 pt-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Admin</p>
+                <p className="px-2 pt-2 text-xs font-semibold uppercase tracking-wide text-crm-accent/80">Admin</p>
                 {[
                   ["settings", "WhatsApp Settings", "Connections"],
                   ["analytics", "Analytics", "Reports"],
@@ -1671,8 +2018,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                 ].map(([key, label, hint]) => (
                   <button
                     key={key}
-                    className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium ${
-                      activeTab === key ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-100"
+                    className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium transition ${
+                      activeTab === key
+                        ? "bg-crm-accent text-black shadow-md shadow-crm-accent/20"
+                        : "text-zinc-300 hover:bg-zinc-800/80 hover:text-white"
                     }`}
                     onClick={() => {
                       const next = key as DashboardSection;
@@ -1681,7 +2030,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     }}
                   >
                     <div>{label}</div>
-                    <div className={`text-xs ${activeTab === key ? "text-slate-300" : "text-slate-400"}`}>{hint}</div>
+                    <div className={`text-xs ${activeTab === key ? "text-black/70" : "text-zinc-500"}`}>{hint}</div>
                   </button>
                 ))}
               </aside>
@@ -1689,12 +2038,12 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
               <div className="space-y-4">
             <section className={`${CARD_CLASS} flex flex-wrap items-center justify-between gap-3`}>
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">{sectionMeta[activeTab].title}</h2>
-                <p className="text-sm text-slate-500">{sectionMeta[activeTab].subtitle}</p>
+                <h2 className="text-lg font-semibold text-zinc-100">{sectionMeta[activeTab].title}</h2>
+                <p className="text-sm text-zinc-500">{sectionMeta[activeTab].subtitle}</p>
               </div>
               <div className="flex flex-col items-end gap-2">
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                  <span className="hidden text-xs text-slate-400 sm:inline">
+                  <span className="hidden text-xs text-zinc-400 sm:inline">
                     {statsUpdatedAt ? `Data as of ${statsUpdatedAt.toLocaleTimeString()}` : ""}
                   </span>
                   <button
@@ -1719,7 +2068,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
               <>
                 <section className="grid gap-4 lg:grid-cols-2">
                   <div className={`${CARD_CLASS} space-y-3`}>
-                    <h2 className="text-base font-semibold text-slate-900">Tags</h2>
+                    <h2 className="text-base font-semibold text-zinc-100">Tags</h2>
                     <form onSubmit={createTag} className="space-y-2">
                       <div className="flex gap-2">
                         <input className={INPUT_CLASS} placeholder="Tag name" value={tagName} onChange={(e) => setTagName(e.target.value)} />
@@ -1729,16 +2078,16 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       </div>
                       <InlineFeedbackText feedback={inlineFeedback.tagCreate} />
                     </form>
-                    <button className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50" type="button" onClick={() => loadTags("tagRefresh")}>
+                    <button className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={() => loadTags("tagRefresh")}>
                       Refresh Tags
                     </button>
                     <InlineFeedbackText feedback={inlineFeedback.tagRefresh} />
                     <div className="flex flex-wrap gap-2">
                       {tags.length === 0 ? (
-                        <p className="text-sm text-slate-500">No tags yet</p>
+                        <p className="text-sm text-zinc-500">No tags yet</p>
                       ) : (
                         tags.map((tag) => (
-                          <span key={tag.id} className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700">
+                          <span key={tag.id} className="rounded-full bg-zinc-800 px-3 py-1 text-xs text-zinc-300">
                             {tag.name}
                           </span>
                         ))
@@ -1747,7 +2096,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                   </div>
 
                   <div className={`${CARD_CLASS} space-y-3`}>
-                    <h2 className="text-base font-semibold text-slate-900">Create Contact</h2>
+                    <h2 className="text-base font-semibold text-zinc-100">Create Contact</h2>
                     <form onSubmit={createContact} className="space-y-2">
                       <input className={INPUT_CLASS} placeholder="Name (optional)" value={contactName} onChange={(e) => setContactName(e.target.value)} />
                       <input className={INPUT_CLASS} placeholder="9999999999 (auto +91)" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} />
@@ -1783,21 +2132,21 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
                 <section className={`${CARD_CLASS} space-y-3`}>
                   <div className="flex flex-wrap items-center gap-2">
-                    <button className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50" type="button" onClick={() => loadContacts("contactList")}>
+                    <button className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={() => loadContacts("contactList")}>
                       Load Contacts
                     </button>
                     <form onSubmit={filterContacts} className="flex flex-wrap gap-2">
                       <input className={INPUT_CLASS} placeholder="Search name/phone" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
-                      <button className="rounded-xl bg-slate-800 px-3 py-2 text-sm text-white hover:bg-slate-900" type="submit">
+                      <button className="rounded-xl bg-zinc-800 px-3 py-2 text-sm text-white hover:bg-black" type="submit">
                         Filter
                       </button>
                     </form>
                     <InlineFeedbackText feedback={inlineFeedback.contactList} />
                   </div>
 
-                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <div className="overflow-x-auto rounded-xl border border-zinc-600">
                     <table className="min-w-full text-left text-sm">
-                      <thead className="bg-slate-50 text-slate-600">
+                      <thead className="bg-zinc-800/50 text-zinc-400">
                         <tr>
                           <th className="px-3 py-2">Name</th>
                           <th className="px-3 py-2">Phone</th>
@@ -1808,7 +2157,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       </thead>
                       <tbody>
                         {contacts.map((contact) => (
-                          <tr key={contact.id} className="border-t border-slate-100">
+                          <tr key={contact.id} className="border-t border-zinc-700">
                             <td className="px-3 py-2">{contact.name || "-"}</td>
                             <td className="px-3 py-2">{contact.phone_e164}</td>
                             <td className="px-3 py-2">{contact.tags.map((tag) => tag.name).join(", ") || "-"}</td>
@@ -1817,7 +2166,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                               <div className="flex flex-wrap gap-2">
                                 <button
                                   type="button"
-                                  className={`${BTN_ROW} border border-slate-200 bg-white text-slate-800 hover:bg-slate-50`}
+                                  className={`${BTN_ROW} border border-zinc-600 bg-white text-zinc-200 hover:bg-zinc-800/50`}
                                   onClick={() => startEdit(contact)}
                                 >
                                   Edit
@@ -1845,7 +2194,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         ))}
                         {contacts.length === 0 && (
                           <tr>
-                            <td className="px-3 py-4 text-center text-slate-500" colSpan={5}>
+                            <td className="px-3 py-4 text-center text-zinc-500" colSpan={5}>
                               No contacts found
                             </td>
                           </tr>
@@ -1857,9 +2206,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
                 {quickSendContact && (
                   <section className={`${CARD_CLASS} space-y-3 border border-emerald-100`}>
-                    <h2 className="text-base font-semibold text-slate-900">Send template to contact</h2>
-                    <p className="text-sm text-slate-600">
-                      Recipient: <span className="font-medium text-slate-900">{quickSendContact.name || "Unnamed"}</span> — {quickSendContact.phone_e164}
+                    <h2 className="text-base font-semibold text-zinc-100">Send template to contact</h2>
+                    <p className="text-sm text-zinc-400">
+                      Recipient: <span className="font-medium text-zinc-100">{quickSendContact.name || "Unnamed"}</span> — {quickSendContact.phone_e164}
                     </p>
                     {templateItems.length === 0 ? (
                       <p className="text-sm text-amber-800">
@@ -1883,13 +2232,13 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           const sel = templateItems.find((it) => `${it.name}__${it.language}` === quickTemplateKey);
                           if (!sel?.preview_text?.trim()) return null;
                           return (
-                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Message preview</p>
-                              <p className="whitespace-pre-wrap text-sm text-slate-800">{sel.preview_text.trim()}</p>
+                            <div className="rounded-lg border border-zinc-600 bg-zinc-800/50 p-3">
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Message preview</p>
+                              <p className="whitespace-pre-wrap text-sm text-zinc-200">{sel.preview_text.trim()}</p>
                             </div>
                           );
                         })()}
-                        <p className="text-xs text-slate-500">Uses the same Meta flow as “Send Template Test” in Settings (approved template required).</p>
+                        <p className="text-xs text-zinc-500">Uses the same Meta flow as “Send Template Test” in Settings (approved template required).</p>
                       </>
                     )}
                     <div className="flex flex-wrap gap-2">
@@ -1925,7 +2274,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
                 {editingContactId && (
                   <section className={`${CARD_CLASS} space-y-3`}>
-                    <h2 className="text-base font-semibold text-slate-900">Edit Contact</h2>
+                    <h2 className="text-base font-semibold text-zinc-100">Edit Contact</h2>
                     <form onSubmit={updateContact} className="grid gap-2 md:grid-cols-2">
                       <input className={INPUT_CLASS} placeholder="Name" value={editName} onChange={(e) => setEditName(e.target.value)} />
                       <input className={INPUT_CLASS} placeholder="9999999999 (auto +91)" value={editPhone} onChange={(e) => setEditPhone(e.target.value)} />
@@ -1943,10 +2292,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         ))}
                       </select>
                       <div className="flex gap-2 md:col-span-2">
-                        <button className="rounded-xl bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700" type="submit">
+                        <button className="rounded-xl bg-crm-accent px-4 py-2 text-sm font-bold text-black hover:bg-crm-accent-hover" type="submit">
                           Save
                         </button>
-                        <button className="rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50" type="button" onClick={clearEditForm}>
+                        <button className="rounded-xl border border-zinc-500 px-4 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={clearEditForm}>
                           Cancel
                         </button>
                       </div>
@@ -1960,7 +2309,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
             {activeTab === "campaigns" && (
               <section className="grid gap-4 lg:grid-cols-2">
                 <div className={`${CARD_CLASS} space-y-3`}>
-                  <h2 className="text-base font-semibold text-slate-900">Create Campaign</h2>
+                  <h2 className="text-base font-semibold text-zinc-100">Create Campaign</h2>
                   <form onSubmit={createCampaign} className="space-y-2">
                     <input className={INPUT_CLASS} placeholder="Campaign name" value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
                     <textarea className={INPUT_CLASS} placeholder="Campaign message text" value={campaignMessage} onChange={(e) => setCampaignMessage(e.target.value)} rows={4} />
@@ -2004,18 +2353,18 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
                 <div className={`${CARD_CLASS} space-y-3`}>
                   <div className="flex items-center justify-between">
-                    <h2 className="text-base font-semibold text-slate-900">Campaigns</h2>
+                    <h2 className="text-base font-semibold text-zinc-100">Campaigns</h2>
                     <div className="flex flex-col items-end gap-1">
                       <div className="flex gap-2">
                         <button
-                          className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                          className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50"
                           type="button"
                           onClick={() => loadTemplates("campaignActions")}
                         >
                           Load Templates
                         </button>
                         <button
-                          className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                          className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50"
                           type="button"
                           onClick={() => loadCampaigns("campaignActions")}
                         >
@@ -2027,17 +2376,17 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                   </div>
                   <div className="max-h-96 space-y-2 overflow-auto">
                     {campaigns.map((campaign) => (
-                      <div key={campaign.id} className="rounded-xl border border-slate-200 p-3">
+                      <div key={campaign.id} className="rounded-xl border border-zinc-600 p-3">
                         <div className="flex items-center justify-between">
-                          <p className="font-medium text-slate-900">{campaign.name}</p>
-                          <span className={`rounded-full px-2 py-1 text-xs ${campaign.status === "running" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>
+                          <p className="font-medium text-zinc-100">{campaign.name}</p>
+                          <span className={`rounded-full px-2 py-1 text-xs ${campaign.status === "running" ? "bg-amber-100 text-amber-700" : "bg-zinc-800 text-zinc-400"}`}>
                             {campaign.status}
                           </span>
                         </div>
-                        <p className="mt-2 text-sm text-slate-600">{campaign.message_text}</p>
-                        <p className="mt-2 text-xs text-slate-500">Recipients: {campaign.recipients.length}</p>
+                        <p className="mt-2 text-sm text-zinc-400">{campaign.message_text}</p>
+                        <p className="mt-2 text-xs text-zinc-500">Recipients: {campaign.recipients.length}</p>
                         <button
-                          className="mt-2 rounded-lg border border-slate-300 px-3 py-1 text-xs hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          className="mt-2 rounded-lg border border-zinc-500 px-3 py-1 text-xs hover:bg-zinc-800/50 disabled:cursor-not-allowed disabled:opacity-60"
                           onClick={() => startCampaign(campaign.id)}
                           disabled={campaign.status === "running"}
                         >
@@ -2045,7 +2394,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         </button>
                       </div>
                     ))}
-                    {campaigns.length === 0 && <p className="text-sm text-slate-500">No campaigns yet</p>}
+                    {campaigns.length === 0 && <p className="text-sm text-zinc-500">No campaigns yet</p>}
                   </div>
                 </div>
               </section>
@@ -2054,33 +2403,33 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
             {activeTab === "settings" && (
               <>
                 <section className={`${CARD_CLASS} space-y-3`}>
-                  <h2 className="text-base font-semibold text-slate-900">Setup checklist</h2>
-                  <p className="text-xs text-slate-500">Complete these steps for a reliable WhatsApp CRM setup.</p>
-                  <ul className="space-y-2 text-sm text-slate-700">
+                  <h2 className="text-base font-semibold text-zinc-100">Setup checklist</h2>
+                  <p className="text-xs text-zinc-500">Complete these steps for a reliable WhatsApp CRM setup.</p>
+                  <ul className="space-y-2 text-sm text-zinc-300">
                     <li className="flex items-center gap-2">
-                      <span className={waConnectionId && waPhoneNumberId.trim() ? "text-emerald-600" : "text-slate-400"}>
+                      <span className={waConnectionId && waPhoneNumberId.trim() ? "text-emerald-600" : "text-zinc-400"}>
                         {waConnectionId && waPhoneNumberId.trim() ? "✓" : "○"}
                       </span>
                       Connection saved (phone number id)
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className={waWabaId.trim() ? "text-emerald-600" : "text-slate-400"}>{waWabaId.trim() ? "✓" : "○"}</span>
+                      <span className={waWabaId.trim() ? "text-emerald-600" : "text-zinc-400"}>{waWabaId.trim() ? "✓" : "○"}</span>
                       WABA ID set (for template sync)
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className={waVerifyTokenConfigured ? "text-emerald-600" : "text-slate-400"}>{waVerifyTokenConfigured ? "✓" : "○"}</span>
+                      <span className={waVerifyTokenConfigured ? "text-emerald-600" : "text-zinc-400"}>{waVerifyTokenConfigured ? "✓" : "○"}</span>
                       Verify token set (Meta webhook)
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className={waAppSecretConfigured ? "text-emerald-600" : "text-slate-400"}>{waAppSecretConfigured ? "✓" : "○"}</span>
+                      <span className={waAppSecretConfigured ? "text-emerald-600" : "text-zinc-400"}>{waAppSecretConfigured ? "✓" : "○"}</span>
                       App secret set (secure inbound webhooks)
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className={templateItems.length > 0 ? "text-emerald-600" : "text-slate-400"}>{templateItems.length > 0 ? "✓" : "○"}</span>
+                      <span className={templateItems.length > 0 ? "text-emerald-600" : "text-zinc-400"}>{templateItems.length > 0 ? "✓" : "○"}</span>
                       Templates synced ({templateItems.length} in library)
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className={connectionHealth?.overall === "healthy" ? "text-emerald-600" : "text-slate-400"}>
+                      <span className={connectionHealth?.overall === "healthy" ? "text-emerald-600" : "text-zinc-400"}>
                         {connectionHealth?.overall === "healthy" ? "✓" : "○"}
                       </span>
                       API health check passed (token + webhook readiness)
@@ -2092,14 +2441,14 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                 <div className={`${CARD_CLASS} space-y-3`}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-base font-semibold text-slate-900">Meta WhatsApp Connection</h2>
+                      <h2 className="text-base font-semibold text-zinc-100">Meta WhatsApp Connection</h2>
                       {connectionHealth && (
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
                             connectionHealth.overall === "healthy"
                               ? "bg-emerald-100 text-emerald-800"
                               : connectionHealth.overall === "disconnected"
-                                ? "bg-slate-200 text-slate-700"
+                                ? "bg-zinc-700 text-zinc-300"
                                 : "bg-amber-100 text-amber-800"
                           }`}
                         >
@@ -2112,17 +2461,17 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       )}
                       <button
                         type="button"
-                        className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                        className="rounded-lg border border-zinc-600 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800/50"
                         onClick={() => loadConnectionHealth()}
                       >
                         Re-check
                       </button>
                     </div>
                     <div className="flex gap-2">
-                        <button className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50" type="button" onClick={() => loadWhatsAppConnection("waConnectionForm")}>
+                        <button className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={() => loadWhatsAppConnection("waConnectionForm")}>
                           Load Default
                         </button>
-                        <button className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50" type="button" onClick={() => loadWhatsAppConnections("waConnectionForm")}>
+                        <button className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={() => loadWhatsAppConnections("waConnectionForm")}>
                           List All
                         </button>
                     </div>
@@ -2153,19 +2502,19 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       ))}
                     </select>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-600">Connection Label</label>
+                      <label className="text-xs font-medium text-zinc-400">Connection Label</label>
                       <input className={INPUT_CLASS} placeholder="Primary" value={waLabel} onChange={(e) => setWaLabel(e.target.value)} />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-600">Phone Number ID</label>
+                      <label className="text-xs font-medium text-zinc-400">Phone Number ID</label>
                       <input className={INPUT_CLASS} placeholder="Meta phone number id" value={waPhoneNumberId} onChange={(e) => setWaPhoneNumberId(e.target.value)} />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-600">WABA ID</label>
+                      <label className="text-xs font-medium text-zinc-400">WABA ID</label>
                       <input className={INPUT_CLASS} placeholder="WhatsApp Business Account ID" value={waWabaId} onChange={(e) => setWaWabaId(e.target.value)} />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-600">Access Token</label>
+                      <label className="text-xs font-medium text-zinc-400">Access Token</label>
                       <input
                         className={INPUT_CLASS}
                         placeholder={waAccessTokenPreview ? "Saved securely. Enter only to rotate token" : "Paste fresh Meta access token"}
@@ -2174,7 +2523,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-600">Verify Token</label>
+                      <label className="text-xs font-medium text-zinc-400">Verify Token</label>
                       <input
                         className={INPUT_CLASS}
                         placeholder={waVerifyTokenConfigured ? "Saved securely. Enter only to rotate verify token" : "Your custom webhook verify token"}
@@ -2183,7 +2532,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-600">App Secret</label>
+                      <label className="text-xs font-medium text-zinc-400">App Secret</label>
                       <input
                         className={INPUT_CLASS}
                         placeholder={waAppSecretConfigured ? "Saved securely. Enter only to rotate app secret" : "Meta app secret"}
@@ -2192,11 +2541,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       />
                     </div>
                     {waAccessTokenPreview && (
-                      <p className="text-xs text-slate-500">
+                      <p className="text-xs text-zinc-500">
                         Saved token: {waAccessTokenPreview} {waAppSecretConfigured ? "| App secret configured" : "| App secret not set"}
                       </p>
                     )}
-                    <div className="flex gap-4 text-sm text-slate-700">
+                    <div className="flex gap-4 text-sm text-zinc-300">
                       <label className="flex items-center gap-2">
                         <input type="checkbox" checked={waIsDefault} onChange={(e) => setWaIsDefault(e.target.checked)} />
                         Default
@@ -2229,7 +2578,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                 </div>
 
                 <div className={`${CARD_CLASS} space-y-3`}>
-                  <h2 className="text-base font-semibold text-slate-900">Send Template Test</h2>
+                  <h2 className="text-base font-semibold text-zinc-100">Send Template Test</h2>
                   <form onSubmit={sendTemplateTest} className="space-y-2">
                     <input className={INPUT_CLASS} placeholder="Recipient phone (auto +91)" value={waTestToPhone} onChange={(e) => setWaTestToPhone(e.target.value)} />
                     <select
@@ -2252,13 +2601,13 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       const sel = templateItems.find((it) => it.name === waTemplateName && it.language === waTemplateLanguage);
                       if (!sel?.preview_text?.trim()) return null;
                       return (
-                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Message preview</p>
-                          <p className="whitespace-pre-wrap text-sm text-slate-800">{sel.preview_text.trim()}</p>
+                        <div className="rounded-lg border border-zinc-600 bg-zinc-800/50 p-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Message preview</p>
+                          <p className="whitespace-pre-wrap text-sm text-zinc-200">{sel.preview_text.trim()}</p>
                         </div>
                       );
                     })()}
-                    <p className="text-xs text-slate-500">Selected language: {waTemplateLanguage || "en_US"}</p>
+                    <p className="text-xs text-zinc-500">Selected language: {waTemplateLanguage || "en_US"}</p>
                     <button className={BTN_SUCCESS} type="submit" disabled={sendingTemplateTest}>
                       {sendingTemplateTest ? (
                         <>
@@ -2270,7 +2619,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     </button>
                     <InlineFeedbackText feedback={inlineFeedback.waTemplateTest} />
                   </form>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-xs text-zinc-500">
                     Test requires an approved template in Meta and recipient allowed in your WhatsApp setup.
                   </p>
                 </div>
@@ -2282,12 +2631,12 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
             {activeTab === "templates" && (
               <section className="space-y-4">
                 <div className={`${CARD_CLASS} space-y-3`}>
-                  <h2 className="text-base font-semibold text-slate-900">Create template in Meta</h2>
-                  <p className="text-xs text-slate-500">
+                  <h2 className="text-base font-semibold text-zinc-100">Create template in Meta</h2>
+                  <p className="text-xs text-zinc-500">
                     Sends a TEXT header/body/footer template for approval using your logged-in account's default WhatsApp connection.
                     Numbered placeholders like{" "}
-                    <code className="rounded bg-slate-100 px-1">{"{{1}}"}</code> are converted to named variables for Meta (
-                    <code className="rounded bg-slate-100 px-1">{"{{your_label}}"}</code>
+                    <code className="rounded bg-zinc-800 px-1">{"{{1}}"}</code> are converted to named variables for Meta (
+                    <code className="rounded bg-zinc-800 px-1">{"{{your_label}}"}</code>
                     ). When you later{" "}
                     <a
                       className="font-medium text-blue-600 underline"
@@ -2298,9 +2647,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       send a template message
                     </a>
                     , the Cloud API uses{" "}
-                    <code className="rounded bg-slate-100 px-1">template.components[].parameters[]</code> with{" "}
-                    <code className="rounded bg-slate-100 px-1">parameter_name</code> +{" "}
-                    <code className="rounded bg-slate-100 px-1">text</code> for each variable (see Meta&apos;s named-parameter send
+                    <code className="rounded bg-zinc-800 px-1">template.components[].parameters[]</code> with{" "}
+                    <code className="rounded bg-zinc-800 px-1">parameter_name</code> +{" "}
+                    <code className="rounded bg-zinc-800 px-1">text</code> for each variable (see Meta&apos;s named-parameter send
                     examples). This app&apos;s simple &quot;Send template test&quot; call does not pass those parameters yet—utility
                     templates without variables, or extending the send API, are needed for tests.
                   </p>
@@ -2319,7 +2668,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     />
                     <div className="grid gap-2 sm:grid-cols-2">
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-slate-600">Language</label>
+                        <label className="block text-xs font-medium text-zinc-400">Language</label>
                         <select
                           className={INPUT_CLASS}
                           value={createTplLanguageSelect}
@@ -2339,7 +2688,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="block text-xs font-medium text-slate-600">Category</label>
+                        <label className="block text-xs font-medium text-zinc-400">Category</label>
                         <select
                           className={INPUT_CLASS}
                           value={createTplCategory}
@@ -2367,9 +2716,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       onChange={(e) => setCreateTplBody(e.target.value)}
                     />
                     {createTplPhOrder.length > 0 && (
-                      <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/80 p-3">
-                        <p className="text-xs font-medium text-slate-700">Template variables</p>
-                        <p className="text-xs text-slate-500">
+                      <div className="space-y-2 rounded-xl border border-zinc-600 bg-zinc-800/50/80 p-3">
+                        <p className="text-xs font-medium text-zinc-300">Template variables</p>
+                        <p className="text-xs text-zinc-500">
                           For each <code className="rounded bg-white px-1">{"{{n}}"}</code>, choose a Meta variable name (lowercase,
                           underscores) and a sample value Meta uses during review.
                         </p>
@@ -2377,7 +2726,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           {createTplPhOrder.map((n, i) => (
                             <li key={`${n}-${i}`} className="grid gap-2 sm:grid-cols-2">
                               <div>
-                                <label className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                <label className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-zinc-500">
                                   {"{{"}
                                   {n}
                                   {"}}"} — variable name
@@ -2395,7 +2744,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                                 />
                               </div>
                               <div>
-                                <label className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                <label className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-zinc-500">
                                   Sample value
                                 </label>
                                 <input
@@ -2420,12 +2769,12 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       value={createTplFooter}
                       onChange={(e) => setCreateTplFooter(e.target.value)}
                     />
-                    <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                    <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-300">
                       <input
                         type="checkbox"
                         checked={createTplAllowCat}
                         onChange={(e) => setCreateTplAllowCat(e.target.checked)}
-                        className="rounded border-slate-300"
+                        className="rounded border-zinc-500"
                       />
                       Allow Meta to adjust category if needed
                     </label>
@@ -2448,14 +2797,14 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
                 <div className={`${CARD_CLASS} space-y-3`}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h2 className="text-base font-semibold text-slate-900">Template library</h2>
+                    <h2 className="text-base font-semibold text-zinc-100">Template library</h2>
                     <div className="flex flex-col items-end gap-1">
                       <div className="flex gap-2">
-                        <button className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50" type="button" onClick={() => loadTemplates("templatesToolbar")}>
+                        <button className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={() => loadTemplates("templatesToolbar")}>
                           Load
                         </button>
                         <button
-                          className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50"
+                          className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50"
                           type="button"
                           onClick={() => syncTemplates("templatesToolbar")}
                         >
@@ -2467,16 +2816,16 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                   </div>
                   <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                     {templateItems.map((item) => (
-                      <div key={item.id} className="rounded-xl border border-slate-200 p-3">
+                      <div key={item.id} className="rounded-xl border border-zinc-600 p-3">
                         <p className="text-sm font-semibold">{item.name}</p>
-                        <p className="text-xs text-slate-500">{item.language}</p>
-                        <p className="text-xs text-slate-500">{item.category || "No category"}</p>
+                        <p className="text-xs text-zinc-500">{item.language}</p>
+                        <p className="text-xs text-zinc-500">{item.category || "No category"}</p>
                         <span className={templateStatusBadgeClass(item.status)}>
                           {item.status || "unknown"}
                         </span>
                       </div>
                     ))}
-                    {templateItems.length === 0 && <p className="text-sm text-slate-500">No templates loaded yet.</p>}
+                    {templateItems.length === 0 && <p className="text-sm text-zinc-500">No templates loaded yet.</p>}
                   </div>
                 </div>
               </section>
@@ -2487,13 +2836,13 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                 <div className={`${CARD_CLASS} space-y-3`}>
                   <div className="flex items-center justify-between">
                     <div>
-                      <h2 className="text-base font-semibold text-slate-900">Inbox Conversations</h2>
-                      <p className="text-xs text-slate-500">
+                      <h2 className="text-base font-semibold text-zinc-100">Inbox Conversations</h2>
+                      <p className="text-xs text-zinc-500">
                         <span className="inline-block h-2 w-2 rounded-full bg-emerald-500 align-middle" /> Live auto-refresh
                         {inboxLastSyncedAt ? ` | Last sync: ${inboxLastSyncedAt}` : ""}
                       </p>
                     </div>
-                    <button className="rounded-xl border border-slate-300 px-3 py-2 text-sm hover:bg-slate-50" type="button" onClick={() => loadConversations("inboxList")}>
+                    <button className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={() => loadConversations("inboxList")}>
                       Refresh
                     </button>
                   </div>
@@ -2503,41 +2852,55 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       <button
                         key={item.conversation_id}
                         className={`w-full rounded-xl border p-3 text-left ${
-                          selectedConversation?.conversation_id === item.conversation_id ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white"
+                          selectedConversation?.conversation_id === item.conversation_id
+                            ? "border-crm-accent bg-crm-accent/15"
+                            : "border-zinc-600 bg-zinc-900/50"
                         }`}
                         onClick={() => loadConversationMessages(item)}
                       >
                         <p className="text-sm font-medium">{item.contact_name || "Unknown contact"}</p>
-                        <p className="text-xs text-slate-500">{item.phone_e164}</p>
+                        <p className="text-xs text-zinc-500">{item.phone_e164}</p>
                       </button>
                     ))}
-                    {conversations.length === 0 && <p className="text-sm text-slate-500">No conversations yet</p>}
+                    {conversations.length === 0 && <p className="text-sm text-zinc-500">No conversations yet</p>}
                   </div>
                 </div>
 
                 <div className={`${CARD_CLASS} space-y-3`}>
-                  <h2 className="text-base font-semibold text-slate-900">Conversation Thread</h2>
+                  <h2 className="text-base font-semibold text-zinc-100">Conversation Thread</h2>
                   <InlineFeedbackText feedback={inlineFeedback.inboxThread} />
-                  <div className="max-h-72 space-y-2 overflow-auto rounded-xl border border-slate-200 p-3">
-                    {conversationMessages.map((msg) => (
-                      <div
-                        key={msg.id}
-                        className={`max-w-[90%] rounded-xl px-3 py-2 text-sm ${
-                          msg.direction === "outbound" ? "ml-auto bg-blue-600 text-white" : "bg-slate-100 text-slate-800"
-                        }`}
-                      >
-                        <div className="text-[15px]">
-                          {formatWhatsAppRichText(
-                            getMessageDisplayText(msg.payload as Record<string, unknown> | undefined, msg.type),
-                            msg.direction === "outbound" ? "outbound" : "inbound"
+                  <div className="max-h-72 space-y-2 overflow-auto rounded-xl border border-zinc-600 p-3">
+                    {conversationMessages.map((msg) => {
+                      const display = getMessageDisplayText(msg.payload as Record<string, unknown> | undefined, msg.type);
+                      const showMedia = INBOX_MEDIA_TYPES.has(msg.type);
+                      const hidePlaceholder = showMedia && inboxMediaPlaceholderOnly(msg.type, display);
+                      return (
+                        <div
+                          key={msg.id}
+                          className={`max-w-[90%] rounded-xl px-3 py-2 text-sm ${
+                            msg.direction === "outbound" ? "ml-auto bg-crm-accent text-black" : "bg-zinc-800 text-zinc-200"
+                          }`}
+                        >
+                          {showMedia && (
+                            <InboxMessageMedia
+                              messageId={msg.id}
+                              messageType={msg.type}
+                              authToken={token}
+                              direction={msg.direction}
+                            />
                           )}
+                          {!hidePlaceholder && (
+                            <div className={`text-[15px] ${showMedia ? "mt-2" : ""}`}>
+                              {formatWhatsAppRichText(display, msg.direction === "outbound" ? "outbound" : "inbound")}
+                            </div>
+                          )}
+                          <p className={`mt-1 text-[10px] ${msg.direction === "outbound" ? "text-black/60" : "text-zinc-500"}`}>
+                            {msg.status}
+                          </p>
                         </div>
-                        <p className={`mt-1 text-[10px] ${msg.direction === "outbound" ? "text-blue-100" : "text-slate-500"}`}>
-                          {msg.status}
-                        </p>
-                      </div>
-                    ))}
-                    {conversationMessages.length === 0 && <p className="text-sm text-slate-500">Select a conversation</p>}
+                      );
+                    })}
+                    {conversationMessages.length === 0 && <p className="text-sm text-zinc-500">Select a conversation</p>}
                   </div>
                   <form onSubmit={sendReply} className="space-y-2">
                     <textarea className={INPUT_CLASS} rows={3} placeholder="Type reply..." value={replyText} onChange={(e) => setReplyText(e.target.value)} />
@@ -2558,28 +2921,28 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
               {activeTab === "analytics" && (
                 <>
                   <section className={`${CARD_CLASS} space-y-4`}>
-                    <h2 className="text-base font-semibold text-slate-900">Campaign performance</h2>
+                    <h2 className="text-base font-semibold text-zinc-100">Campaign performance</h2>
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                      <div className="rounded-xl border border-slate-200 p-3">
-                        <p className="text-xs text-slate-500">Total Campaigns</p>
-                        <p className="text-xl font-semibold text-slate-900">{campaigns.length}</p>
+                      <div className="rounded-xl border border-zinc-600 p-3">
+                        <p className="text-xs text-zinc-500">Total Campaigns</p>
+                        <p className="text-xl font-semibold text-zinc-100">{campaigns.length}</p>
                       </div>
-                      <div className="rounded-xl border border-slate-200 p-3">
-                        <p className="text-xs text-slate-500">Scheduled</p>
+                      <div className="rounded-xl border border-zinc-600 p-3">
+                        <p className="text-xs text-zinc-500">Scheduled</p>
                         <p className="text-xl font-semibold text-indigo-700">{campaignStats.scheduled}</p>
                       </div>
-                      <div className="rounded-xl border border-slate-200 p-3">
-                        <p className="text-xs text-slate-500">Completed</p>
+                      <div className="rounded-xl border border-zinc-600 p-3">
+                        <p className="text-xs text-zinc-500">Completed</p>
                         <p className="text-xl font-semibold text-emerald-700">{campaignStats.completed}</p>
                       </div>
-                      <div className="rounded-xl border border-slate-200 p-3">
-                        <p className="text-xs text-slate-500">Pending / Queued</p>
+                      <div className="rounded-xl border border-zinc-600 p-3">
+                        <p className="text-xs text-zinc-500">Pending / Queued</p>
                         <p className="text-xl font-semibold text-amber-700">{campaignStats.queued}</p>
                       </div>
                     </div>
-                    <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <div className="overflow-x-auto rounded-xl border border-zinc-600">
                       <table className="min-w-full text-left text-sm">
-                        <thead className="bg-slate-50 text-slate-600">
+                        <thead className="bg-zinc-800/50 text-zinc-400">
                           <tr>
                             <th className="px-3 py-2">Campaign</th>
                             <th className="px-3 py-2">Status</th>
@@ -2589,7 +2952,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         </thead>
                         <tbody>
                           {campaigns.map((campaign) => (
-                            <tr key={campaign.id} className="border-t border-slate-100">
+                            <tr key={campaign.id} className="border-t border-zinc-700">
                               <td className="px-3 py-2">{campaign.name}</td>
                               <td className="px-3 py-2">{campaign.status}</td>
                               <td className="px-3 py-2">{campaign.recipients.length}</td>
@@ -2598,7 +2961,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           ))}
                           {campaigns.length === 0 && (
                             <tr>
-                              <td className="px-3 py-4 text-center text-slate-500" colSpan={4}>
+                              <td className="px-3 py-4 text-center text-zinc-500" colSpan={4}>
                                 No campaign data yet. Create and start campaigns to see analytics.
                               </td>
                             </tr>
@@ -2611,11 +2974,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                   <section className={`${CARD_CLASS} space-y-4`}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <h2 className="text-base font-semibold text-slate-900">Meta spend (pricing analytics)</h2>
-                        <p className="mt-1 text-sm text-slate-600">
-                          Pulled from Meta&apos;s <code className="rounded bg-slate-100 px-1 text-xs">pricing_analytics</code> for your
-                          WABA. Costs are shown in <span className="font-medium text-slate-800">Indian Rupees (INR)</span>; period labels
-                          use <span className="font-medium text-slate-800">IST (Asia/Kolkata)</span>. Official totals: Meta Billing Hub.
+                        <h2 className="text-base font-semibold text-zinc-100">Meta spend (pricing analytics)</h2>
+                        <p className="mt-1 text-sm text-zinc-400">
+                          Pulled from Meta&apos;s <code className="rounded bg-zinc-800 px-1 text-xs">pricing_analytics</code> for your
+                          WABA. Costs are shown in <span className="font-medium text-zinc-200">Indian Rupees (INR)</span>; period labels
+                          use <span className="font-medium text-zinc-200">IST (Asia/Kolkata)</span>. Official totals: Meta Billing Hub.
                         </p>
                       </div>
                       <button
@@ -2634,14 +2997,14 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       </button>
                     </div>
 
-                    <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+                    <div className="flex flex-wrap items-end gap-3 rounded-xl border border-zinc-600 bg-zinc-800/50/60 p-3">
                       <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-600">Range</label>
+                        <label className="mb-1 block text-xs font-medium text-zinc-400">Range</label>
                         <div className="flex gap-2">
                           <button
                             type="button"
                             className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
-                              metaPricingDays === 7 ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-700"
+                              metaPricingDays === 7 ? "bg-crm-accent text-black" : "border border-zinc-500 bg-zinc-800 text-zinc-300"
                             }`}
                             onClick={() => setMetaPricingDays(7)}
                           >
@@ -2650,7 +3013,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           <button
                             type="button"
                             className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
-                              metaPricingDays === 30 ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-700"
+                              metaPricingDays === 30 ? "bg-crm-accent text-black" : "border border-zinc-500 bg-zinc-800 text-zinc-300"
                             }`}
                             onClick={() => setMetaPricingDays(30)}
                           >
@@ -2659,7 +3022,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         </div>
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-600">Granularity</label>
+                        <label className="mb-1 block text-xs font-medium text-zinc-400">Granularity</label>
                         <select
                           className={INPUT_CLASS}
                           value={metaPricingGranularity}
@@ -2671,7 +3034,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         </select>
                       </div>
                       <div className="min-w-[140px] flex-1">
-                        <label className="mb-1 block text-xs font-medium text-slate-600">Countries (optional)</label>
+                        <label className="mb-1 block text-xs font-medium text-zinc-400">Countries (optional)</label>
                         <input
                           className={INPUT_CLASS}
                           placeholder="e.g. US,IN"
@@ -2685,8 +3048,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
                     {metaPricingData && (
                       <>
-                        <p className="text-xs text-slate-500">{metaPricingData.disclaimer}</p>
-                        <p className="text-xs text-slate-500">
+                        <p className="text-xs text-zinc-500">{metaPricingData.disclaimer}</p>
+                        <p className="text-xs text-zinc-500">
                           WABA <span className="font-mono">{metaPricingData.waba_id}</span>
                           {metaPricingData.connection_label ? ` · Connection: ${metaPricingData.connection_label}` : ""}
                           <br />
@@ -2695,27 +3058,27 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           (IST) · {metaPricingData.granularity}
                         </p>
                         <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-xl border border-slate-200 bg-white p-4">
-                            <p className="text-xs font-medium text-slate-500">Approx. total cost (sum of buckets)</p>
-                            <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">
+                          <div className="rounded-xl border border-zinc-600 bg-white p-4">
+                            <p className="text-xs font-medium text-zinc-500">Approx. total cost (sum of buckets)</p>
+                            <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
                               {formatMetaInr(metaPricingData.summary_total_cost)}
                             </p>
-                            <p className="mt-1 text-[11px] text-slate-400">Indian Rupees (INR)</p>
+                            <p className="mt-1 text-[11px] text-zinc-400">Indian Rupees (INR)</p>
                           </div>
-                          <div className="rounded-xl border border-slate-200 bg-white p-4">
-                            <p className="text-xs font-medium text-slate-500">Delivered volume (summed)</p>
-                            <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{metaPricingData.summary_total_volume}</p>
-                            <p className="mt-1 text-[11px] text-slate-400">Message delivery counts in returned rows</p>
+                          <div className="rounded-xl border border-zinc-600 bg-white p-4">
+                            <p className="text-xs font-medium text-zinc-500">Delivered volume (summed)</p>
+                            <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">{metaPricingData.summary_total_volume}</p>
+                            <p className="mt-1 text-[11px] text-zinc-400">Message delivery counts in returned rows</p>
                           </div>
                         </div>
 
                         {metaPricingByCategory.length > 0 && (
-                          <div className="rounded-xl border border-slate-200">
-                            <p className="border-b border-slate-100 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                          <div className="rounded-xl border border-zinc-600">
+                            <p className="border-b border-zinc-700 bg-zinc-800/50 px-3 py-2 text-xs font-semibold text-zinc-400">
                               By pricing category
                             </p>
                             <table className="min-w-full text-left text-sm">
-                              <thead className="bg-slate-50/80 text-slate-600">
+                              <thead className="bg-zinc-800/50/80 text-zinc-400">
                                 <tr>
                                   <th className="px-3 py-2">Category</th>
                                   <th className="px-3 py-2">Cost</th>
@@ -2724,7 +3087,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                               </thead>
                               <tbody>
                                 {metaPricingByCategory.map(([cat, agg]) => (
-                                  <tr key={cat} className="border-t border-slate-100">
+                                  <tr key={cat} className="border-t border-zinc-700">
                                     <td className="px-3 py-2 font-medium">{cat}</td>
                                     <td className="px-3 py-2 tabular-nums">{formatMetaInr(agg.cost)}</td>
                                     <td className="px-3 py-2 tabular-nums">{agg.volume}</td>
@@ -2735,9 +3098,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           </div>
                         )}
 
-                        <div className="max-h-80 overflow-auto rounded-xl border border-slate-200">
+                        <div className="max-h-80 overflow-auto rounded-xl border border-zinc-600">
                           <table className="min-w-full text-left text-sm">
-                            <thead className="sticky top-0 bg-slate-50 text-slate-600">
+                            <thead className="sticky top-0 bg-zinc-800/50 text-zinc-400">
                               <tr>
                                 <th className="px-3 py-2">Period start (IST)</th>
                                 <th className="px-3 py-2">Country</th>
@@ -2750,8 +3113,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                             </thead>
                             <tbody>
                               {metaPricingData.data_points.map((row, idx) => (
-                                <tr key={`${row.start}-${row.end}-${idx}`} className="border-t border-slate-100">
-                                  <td className="px-3 py-2 text-slate-600">
+                                <tr key={`${row.start}-${row.end}-${idx}`} className="border-t border-zinc-700">
+                                  <td className="px-3 py-2 text-zinc-400">
                                     {formatMetaPricingBucketStart(row.start, metaPricingData.granularity)}
                                   </td>
                                   <td className="px-3 py-2">{row.country || "—"}</td>
@@ -2771,47 +3134,47 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     )}
 
                     {!metaPricingData && !metaPricingLoading && (
-                      <p className="text-sm text-slate-500">Choose a range and click Load from Meta to fetch pricing analytics.</p>
+                      <p className="text-sm text-zinc-500">Choose a range and click Load from Meta to fetch pricing analytics.</p>
                     )}
                   </section>
                 </>
               )}
               {activeTab === "automations" && (
                 <section className={`${CARD_CLASS} space-y-2`}>
-                  <h2 className="text-base font-semibold text-slate-900">Automations</h2>
-                  <p className="text-sm text-slate-600">
+                  <h2 className="text-base font-semibold text-zinc-100">Automations</h2>
+                  <p className="text-sm text-zinc-400">
                     Rule-based flows, triggers, and sequences will live here. The workspace metrics above stay in sync when you use{" "}
-                    <span className="font-medium text-slate-800">Refresh workspace data</span>.
+                    <span className="font-medium text-zinc-200">Refresh workspace data</span>.
                   </p>
                 </section>
               )}
               {activeTab === "integrations" && (
                 <section className="space-y-4">
                   <div className={`${CARD_CLASS} space-y-3`}>
-                    <h3 className="text-base font-semibold text-slate-900">Server-to-server API</h3>
-                    <p className="text-sm text-slate-600">
-                      Other systems send WhatsApp messages with an integration key (header <code className="rounded bg-slate-100 px-1 text-xs">X-Integration-Key</code>
+                    <h3 className="text-base font-semibold text-zinc-100">Server-to-server API</h3>
+                    <p className="text-sm text-zinc-400">
+                      Other systems send WhatsApp messages with an integration key (header <code className="rounded bg-zinc-800 px-1 text-xs">X-Integration-Key</code>
                       ). Keys are tied to this tenant and use the default WhatsApp connection.
                     </p>
-                    <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 font-mono text-[11px] leading-relaxed text-slate-700">
-                      <p className="mb-2 font-sans text-xs font-semibold text-slate-600">Endpoints (same base as the app)</p>
+                    <div className="rounded-xl border border-zinc-600 bg-zinc-800/50/80 p-3 font-mono text-[11px] leading-relaxed text-zinc-300">
+                      <p className="mb-2 font-sans text-xs font-semibold text-zinc-400">Endpoints (same base as the app)</p>
                       <p>
                         <span className="text-emerald-700">POST</span> {API_BASE}/integrations/whatsapp/send-template
                       </p>
                       <p>
                         <span className="text-emerald-700">POST</span> {API_BASE}/integrations/whatsapp/send-text
                       </p>
-                      <p className="mt-2 font-sans text-[10px] text-slate-500">
+                      <p className="mt-2 font-sans text-[10px] text-zinc-500">
                         JSON body fields match the dashboard API (template name, language, optional body_parameters; or plain text for session messages).
                       </p>
                     </div>
                   </div>
 
                   <div className={`${CARD_CLASS} space-y-3`}>
-                    <h3 className="text-base font-semibold text-slate-900">API keys</h3>
+                    <h3 className="text-base font-semibold text-zinc-100">API keys</h3>
                     <form onSubmit={createIntegrationKey} className="flex flex-wrap items-end gap-2">
                       <div className="min-w-[200px] flex-1">
-                        <label className="mb-1 block text-xs font-medium text-slate-600">Label (optional)</label>
+                        <label className="mb-1 block text-xs font-medium text-zinc-400">Label (optional)</label>
                         <input
                           className={INPUT_CLASS}
                           placeholder="e.g. Production CRM"
@@ -2852,9 +3215,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       </div>
                     )}
                     <InlineFeedbackText feedback={inlineFeedback.integrationPanel} />
-                    <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <div className="overflow-x-auto rounded-xl border border-zinc-600">
                       <table className="min-w-full text-left text-sm">
-                        <thead className="bg-slate-50 text-slate-600">
+                        <thead className="bg-zinc-800/50 text-zinc-400">
                           <tr>
                             <th className="px-3 py-2">Label</th>
                             <th className="px-3 py-2">Status</th>
@@ -2865,24 +3228,24 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         <tbody>
                           {integrationKeysLoading && integrationKeys.length === 0 ? (
                             <tr>
-                              <td className="px-3 py-6 text-center text-slate-500" colSpan={4}>
+                              <td className="px-3 py-6 text-center text-zinc-500" colSpan={4}>
                                 Loading keys…
                               </td>
                             </tr>
                           ) : (
                             integrationKeys.map((row) => (
-                              <tr key={row.id} className="border-t border-slate-100">
+                              <tr key={row.id} className="border-t border-zinc-700">
                                 <td className="px-3 py-2">{row.label || "—"}</td>
                                 <td className="px-3 py-2">
                                   <span
                                     className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                                      row.is_active ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-600"
+                                      row.is_active ? "bg-lime-500/20 text-lime-400" : "bg-zinc-700 text-zinc-400"
                                     }`}
                                   >
                                     {row.is_active ? "active" : "revoked"}
                                   </span>
                                 </td>
-                                <td className="px-3 py-2 text-slate-600">{new Date(row.created_at).toLocaleString()}</td>
+                                <td className="px-3 py-2 text-zinc-400">{new Date(row.created_at).toLocaleString()}</td>
                                 <td className="px-3 py-2 text-right">
                                   {row.is_active ? (
                                     <button
@@ -2893,7 +3256,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                                       Revoke
                                     </button>
                                   ) : (
-                                    <span className="text-xs text-slate-400">—</span>
+                                    <span className="text-xs text-zinc-400">—</span>
                                   )}
                                 </td>
                               </tr>
@@ -2901,7 +3264,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           )}
                           {!integrationKeysLoading && integrationKeys.length === 0 && (
                             <tr>
-                              <td className="px-3 py-6 text-center text-slate-500" colSpan={4}>
+                              <td className="px-3 py-6 text-center text-zinc-500" colSpan={4}>
                                 No keys yet. Create one to authenticate external systems.
                               </td>
                             </tr>

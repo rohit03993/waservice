@@ -3,6 +3,9 @@ import httpx
 # Newer analytics fields (e.g. pricing_analytics) require a recent Graph version.
 GRAPH_ANALYTICS_BASE = "https://graph.facebook.com/v22.0"
 
+# Inbound media is fetched via Graph then CDN; cap size to protect the API worker.
+_MAX_MEDIA_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
 
 class MetaClient:
     BASE_URL = "https://graph.facebook.com/v20.0"
@@ -117,6 +120,31 @@ class MetaClient:
                 msg = err.get("message") if isinstance(err, dict) else str(data)
                 return False, msg
             return True, None
+
+    @staticmethod
+    async def download_media(*, media_id: str, access_token: str) -> tuple[bytes, str]:
+        """
+        Resolve a WABA media id to a CDN URL via Graph, then download bytes.
+        Returns (content, mime_type).
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+        meta_url = f"{MetaClient.BASE_URL}/{media_id}"
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.get(meta_url, headers=headers)
+            info = r.json()
+            if r.status_code >= 400:
+                raise RuntimeError(str(info))
+            download_url = info.get("url") if isinstance(info, dict) else None
+            mime = (info.get("mime_type") if isinstance(info, dict) else None) or "application/octet-stream"
+            if not download_url or not isinstance(download_url, str):
+                raise RuntimeError("Meta media response missing url")
+            r2 = await client.get(download_url, headers=headers)
+            if r2.status_code >= 400:
+                raise RuntimeError(r2.text or str(r2.status_code))
+            content = r2.content
+            if len(content) > _MAX_MEDIA_DOWNLOAD_BYTES:
+                raise RuntimeError("Media exceeds size limit")
+            return content, mime
 
     @staticmethod
     async def fetch_waba_pricing_analytics(
