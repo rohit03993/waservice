@@ -5,6 +5,18 @@ from app.api.deps import get_current_user
 from app.core.config import get_settings
 from app.core.rate_limit import check_rate_limit
 from app.core.security import create_access_token, hash_password, verify_password
+
+_dummy_login_hash: str | None = None
+
+
+def _timing_safe_login_hash(existing: str | None) -> str:
+    """Use a real Argon2 hash when the email is unknown so verify_password cost matches real logins."""
+    global _dummy_login_hash
+    if existing:
+        return existing
+    if _dummy_login_hash is None:
+        _dummy_login_hash = hash_password("__login_probe_no_user__")
+    return _dummy_login_hash
 from app.db.session import get_db
 from app.models.membership import Membership
 from app.models.tenant import Tenant
@@ -55,7 +67,10 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
     check_rate_limit(key=f"auth:login:{request.client.host if request.client else 'unknown'}", limit=20, window_seconds=60)
     user = db.query(User).filter(User.email == payload.email.lower()).first()
-    if not user or not verify_password(payload.password, user.password_hash):
+    hash_for_verify = _timing_safe_login_hash(user.password_hash if user else None)
+    if not verify_password(payload.password, hash_for_verify):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is inactive")

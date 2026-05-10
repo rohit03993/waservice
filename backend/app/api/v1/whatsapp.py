@@ -115,6 +115,44 @@ def _classify_reply_media(*, content_type: str | None, filename: str) -> tuple[s
     raise ValueError("Unsupported file type. Use JPEG/PNG images or common document formats (PDF, Office, TXT).")
 
 
+def _file_magic_matches_content(file_bytes: bytes, declared_mime: str, kind: str) -> bool:
+    """Reject Content-Type spoofing by checking magic bytes (minimal, extension of trust)."""
+    if len(file_bytes) < 8:
+        return False
+    if kind == "image":
+        if declared_mime == "image/jpeg":
+            return file_bytes.startswith(b"\xff\xd8\xff")
+        if declared_mime == "image/png":
+            return file_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+        return False
+    if kind == "document":
+        if declared_mime == "application/pdf":
+            return file_bytes.startswith(b"%PDF")
+        if declared_mime in (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ):
+            return file_bytes.startswith(b"PK\x03\x04")
+        ole = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+        if declared_mime == "application/msword":
+            return file_bytes.startswith(b"PK\x03\x04") or file_bytes.startswith(ole)
+        if declared_mime in ("application/vnd.ms-excel", "application/vnd.ms-powerpoint"):
+            return file_bytes.startswith(ole) or file_bytes.startswith(b"PK\x03\x04")
+        if declared_mime == "text/plain":
+            sample = file_bytes[:8192]
+            if b"\x00" in sample:
+                return False
+            for enc in ("utf-8", "utf-8-sig"):
+                try:
+                    sample.decode(enc)
+                    return True
+                except UnicodeDecodeError:
+                    continue
+            return False
+    return False
+
+
 async def _read_upload_with_limit(upload: UploadFile, limit: int) -> bytes:
     chunks: list[bytes] = []
     total = 0
@@ -955,6 +993,11 @@ async def reply_media(
     file_bytes = await _read_upload_with_limit(file, max_bytes)
     if not file_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file")
+    if not _file_magic_matches_content(file_bytes, mime, kind):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File content does not match its declared type. Upload a valid image, PDF, Office document, or UTF-8 text.",
+        )
 
     conn_id = (connection_id or "").strip() or None
     connection = _resolve_connection(db=db, tenant_id=membership.tenant_id, connection_id=conn_id)

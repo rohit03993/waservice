@@ -25,6 +25,9 @@ def create_access_token(subject: str, expires_delta_minutes: int | None = None, 
     payload: dict[str, Any] = {"sub": subject, "exp": expire}
     if extra:
         payload.update(extra)
+    issuer = (settings.jwt_issuer or "").strip()
+    if issuer:
+        payload["iss"] = issuer
 
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
@@ -32,6 +35,20 @@ def create_access_token(subject: str, expires_delta_minutes: int | None = None, 
 def decode_token(token: str) -> dict[str, Any] | None:
     settings = get_settings()
     try:
-        return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(
+            token,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
+            options={
+                "verify_aud": False,
+                "require": ["exp", "sub"],
+            },
+        )
     except JWTError:
         return None
+    issuer = (settings.jwt_issuer or "").strip()
+    if issuer:
+        tok_iss = payload.get("iss")
+        if tok_iss is not None and tok_iss != issuer:
+            return None
+    return payload

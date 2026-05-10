@@ -22,6 +22,8 @@ from app.services.campaign_dispatch import queue_campaign_recipients
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
+_MAX_CAMPAIGN_CSV_BYTES = 6 * 1024 * 1024
+
 
 def _campaign_to_schema(campaign: Campaign) -> CampaignResponse:
     return CampaignResponse(
@@ -155,6 +157,11 @@ async def import_campaign_recipients_csv(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please upload a valid .csv file")
 
     content = await file.read()
+    if len(content) > _MAX_CAMPAIGN_CSV_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"CSV too large (max {_MAX_CAMPAIGN_CSV_BYTES // (1024 * 1024)} MB)",
+        )
     try:
         decoded = content.decode("utf-8-sig")
     except UnicodeDecodeError as error:

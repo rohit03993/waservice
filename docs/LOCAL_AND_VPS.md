@@ -204,6 +204,7 @@ For production, pick **one** approach:
 - [ ] Webhook URL uses **public** `https://.../api/v1/webhook/whatsapp`  
 - [ ] Production API base URL configured for frontend (`NEXT_PUBLIC_API_BASE_URL` or proxy rewrites)  
 - [ ] Worker + Redis running; migrations applied  
+- [ ] Security env + checklist: [SECURITY.md](./SECURITY.md)  
 
 ---
 
