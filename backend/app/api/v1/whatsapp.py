@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_admin_membership, get_admin_or_agent_membership
@@ -53,6 +53,104 @@ def _extract_waba_media_id(message_type: str, payload: dict | None) -> str | Non
     return mid.strip() if isinstance(mid, str) and mid.strip() else None
 
 
+# WhatsApp Cloud API: images max ~5 MB; documents can be larger — cap uploads for the API host.
+_MAX_REPLY_IMAGE_BYTES = 5 * 1024 * 1024
+_MAX_REPLY_DOCUMENT_BYTES = 32 * 1024 * 1024
+
+_ALLOWED_IMAGE_MIMES = frozenset({"image/jpeg", "image/png"})
+_ALLOWED_DOC_MIMES = frozenset(
+    {
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "text/plain",
+    }
+)
+
+_EXT_TO_MIME: dict[str, str] = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain",
+}
+
+
+def _safe_upload_filename(name: str | None) -> str:
+    base = (name or "file").strip().replace("\x00", "") or "file"
+    base = base.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return base[:200] if len(base) > 200 else base
+
+
+def _guess_mime_from_name(filename: str) -> str | None:
+    lower = filename.lower()
+    for ext, mime in _EXT_TO_MIME.items():
+        if lower.endswith(ext):
+            return mime
+    return None
+
+
+def _classify_reply_media(*, content_type: str | None, filename: str) -> tuple[str, str]:
+    """Return (kind, mime) where kind is image|document."""
+    raw = (content_type or "").split(";")[0].strip().lower()
+    if raw in _ALLOWED_IMAGE_MIMES:
+        return "image", raw
+    if raw in _ALLOWED_DOC_MIMES:
+        return "document", raw
+    guessed = _guess_mime_from_name(filename)
+    if guessed in _ALLOWED_IMAGE_MIMES:
+        return "image", guessed
+    if guessed in _ALLOWED_DOC_MIMES:
+        return "document", guessed
+    raise ValueError("Unsupported file type. Use JPEG/PNG images or common document formats (PDF, Office, TXT).")
+
+
+async def _read_upload_with_limit(upload: UploadFile, limit: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _latin1_safe_download_filename(filename: str) -> str:
+    """
+    Starlette response headers must be latin-1; Unicode filenames raise and become HTTP 500.
+    Keep a readable ASCII stem plus original extension when possible.
+    """
+    raw = filename.strip().replace('"', "").replace("\r", "").replace("\n", "")[:200]
+    lower = raw.lower()
+    ext = ""
+    for candidate in (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".txt", ".png", ".jpeg", ".jpg"):
+        if lower.endswith(candidate):
+            ext = candidate
+            raw_base = raw[: len(raw) - len(candidate)]
+            break
+    else:
+        raw_base = raw
+    stem = "".join(c if ord(c) < 128 and c not in '\\"' else "_" for c in raw_base).strip("._")
+    if not stem:
+        stem = "document"
+    stem = stem[:160]
+    return f"{stem}{ext}"
+
+
 def _media_content_disposition(message_type: str, payload: dict | None) -> str | None:
     """Return Content-Disposition value or None to omit."""
     if message_type == "document" and payload:
@@ -60,9 +158,9 @@ def _media_content_disposition(message_type: str, payload: dict | None) -> str |
         if isinstance(block, dict):
             fn = block.get("filename")
             if isinstance(fn, str) and fn.strip():
-                safe = fn.strip().replace('"', "").replace("\r", "").replace("\n", "")
-                if safe:
-                    return f'inline; filename="{safe}"'
+                ascii_name = _latin1_safe_download_filename(fn)
+                if ascii_name:
+                    return f'inline; filename="{ascii_name}"'
     if message_type in ("image", "sticker", "video", "audio"):
         return "inline"
     return None
@@ -821,6 +919,119 @@ async def reply_text(
             )
         )
         db.commit()
+    return {"success": True, "message_id": message_id}
+
+
+@router.post("/reply-media")
+async def reply_media(
+    request: Request,
+    file: UploadFile = File(...),
+    conversation_id: str = Form(...),
+    to_phone_e164: str = Form(...),
+    connection_id: str | None = Form(None),
+    caption: str | None = Form(None),
+    membership: Membership = Depends(get_admin_or_agent_membership),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Send an image or document in the 24h session window (multipart file upload)."""
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(
+        key=f"send:reply-media:{membership.tenant_id}:{membership.user_id}:{client_ip}",
+        limit=30,
+        window_seconds=60,
+    )
+    try:
+        conv_uuid = UUID(conversation_id.strip())
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid conversation_id") from error
+
+    fn = _safe_upload_filename(file.filename)
+    try:
+        kind, mime = _classify_reply_media(content_type=file.content_type, filename=fn)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+    max_bytes = _MAX_REPLY_IMAGE_BYTES if kind == "image" else _MAX_REPLY_DOCUMENT_BYTES
+    file_bytes = await _read_upload_with_limit(file, max_bytes)
+    if not file_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file")
+
+    conn_id = (connection_id or "").strip() or None
+    connection = _resolve_connection(db=db, tenant_id=membership.tenant_id, connection_id=conn_id)
+    token = decrypt_secret(connection.access_token) or ""
+    if not token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WhatsApp access token not configured")
+
+    conversation = (
+        db.query(Conversation)
+        .filter(Conversation.tenant_id == membership.tenant_id, Conversation.id == conv_uuid)
+        .first()
+    )
+    if not conversation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    cap = (caption or "").strip()[:1024] or None
+    to_e164 = normalize_phone_e164(to_phone_e164)
+
+    try:
+        media_id = await MetaClient.upload_media(
+            phone_number_id=connection.phone_number_id,
+            access_token=token,
+            file_bytes=file_bytes,
+            mime_type=mime,
+            filename=fn,
+        )
+        if kind == "image":
+            data = await MetaClient.send_image_message(
+                phone_number_id=connection.phone_number_id,
+                access_token=token,
+                to_phone_e164=to_e164,
+                media_id=media_id,
+                caption=cap,
+            )
+        else:
+            data = await MetaClient.send_document_message(
+                phone_number_id=connection.phone_number_id,
+                access_token=token,
+                to_phone_e164=to_e164,
+                media_id=media_id,
+                caption=cap,
+                filename=fn,
+            )
+    except RuntimeError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Meta send failed: {error}") from error
+
+    message_id = None
+    if isinstance(data.get("messages"), list) and data["messages"]:
+        message_id = data["messages"][0].get("id")
+
+    if message_id:
+        if kind == "image":
+            block: dict = {"id": media_id}
+            if cap:
+                block["caption"] = cap
+            msg_payload: dict = {"image": block, "meta_response": data}
+        else:
+            block = {"id": media_id, "filename": fn}
+            if cap:
+                block["caption"] = cap
+            msg_payload = {"document": block, "meta_response": data}
+
+        db.add(
+            Message(
+                tenant_id=membership.tenant_id,
+                conversation_id=conversation.id,
+                contact_id=conversation.contact_id,
+                direction="outbound",
+                wamid=message_id,
+                type=kind,
+                status="sent",
+                payload=msg_payload,
+            )
+        )
+        conversation.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
     return {"success": True, "message_id": message_id}
 
 

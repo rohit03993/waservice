@@ -7,6 +7,19 @@ GRAPH_ANALYTICS_BASE = "https://graph.facebook.com/v22.0"
 _MAX_MEDIA_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
 
+def _meta_response_dict(response: httpx.Response) -> dict:
+    """Parse Meta JSON or raise RuntimeError (avoids JSONDecodeError → FastAPI 500)."""
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError(
+            f"Meta non-JSON response (HTTP {response.status_code}): {(response.text or '')[:800]}"
+        ) from None
+    if not isinstance(data, dict):
+        raise RuntimeError(str(data)[:800])
+    return data
+
+
 class MetaClient:
     BASE_URL = "https://graph.facebook.com/v20.0"
 
@@ -73,6 +86,93 @@ class MetaClient:
             return data
 
     @staticmethod
+    async def upload_media(
+        *,
+        phone_number_id: str,
+        access_token: str,
+        file_bytes: bytes,
+        mime_type: str,
+        filename: str,
+    ) -> str:
+        """POST multipart upload to Cloud API; returns Meta-hosted media id."""
+        url = f"{MetaClient.BASE_URL}/{phone_number_id}/media"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        files = {"file": (filename, file_bytes, mime_type)}
+        data = {"messaging_product": "whatsapp", "type": mime_type}
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(url, headers=headers, files=files, data=data)
+            body = _meta_response_dict(response)
+            if response.status_code >= 400:
+                raise RuntimeError(str(body))
+            mid = body.get("id")
+            if not mid:
+                raise RuntimeError(str(body))
+            return str(mid)
+
+    @staticmethod
+    async def send_image_message(
+        *,
+        phone_number_id: str,
+        access_token: str,
+        to_phone_e164: str,
+        media_id: str,
+        caption: str | None = None,
+    ) -> dict:
+        url = f"{MetaClient.BASE_URL}/{phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        image_block: dict = {"id": media_id}
+        if caption and caption.strip():
+            image_block["caption"] = caption.strip()[:1024]
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_phone_e164,
+            "type": "image",
+            "image": image_block,
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            data = response.json()
+            if response.status_code >= 400:
+                raise RuntimeError(str(data))
+            return data
+
+    @staticmethod
+    async def send_document_message(
+        *,
+        phone_number_id: str,
+        access_token: str,
+        to_phone_e164: str,
+        media_id: str,
+        caption: str | None = None,
+        filename: str | None = None,
+    ) -> dict:
+        url = f"{MetaClient.BASE_URL}/{phone_number_id}/messages"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+        document_block: dict = {"id": media_id}
+        if caption and caption.strip():
+            document_block["caption"] = caption.strip()[:1024]
+        if filename and filename.strip():
+            document_block["filename"] = filename.strip()[:255]
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_phone_e164,
+            "type": "document",
+            "document": document_block,
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            data = response.json()
+            if response.status_code >= 400:
+                raise RuntimeError(str(data))
+            return data
+
+    @staticmethod
     async def list_templates(
         *,
         waba_id: str,
@@ -131,11 +231,11 @@ class MetaClient:
         meta_url = f"{MetaClient.BASE_URL}/{media_id}"
         async with httpx.AsyncClient(timeout=120) as client:
             r = await client.get(meta_url, headers=headers)
-            info = r.json()
+            info = _meta_response_dict(r)
             if r.status_code >= 400:
                 raise RuntimeError(str(info))
-            download_url = info.get("url") if isinstance(info, dict) else None
-            mime = (info.get("mime_type") if isinstance(info, dict) else None) or "application/octet-stream"
+            download_url = info.get("url")
+            mime = info.get("mime_type") or "application/octet-stream"
             if not download_url or not isinstance(download_url, str):
                 raise RuntimeError("Meta media response missing url")
             r2 = await client.get(download_url, headers=headers)

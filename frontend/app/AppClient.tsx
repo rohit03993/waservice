@@ -671,6 +671,17 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [sendingQuickTemplate, setSendingQuickTemplate] = useState(false);
   const [sendingTemplateTest, setSendingTemplateTest] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
+  const [replyAttachment, setReplyAttachment] = useState<File | null>(null);
+  const replyFileInputRef = useRef<HTMLInputElement | null>(null);
+  const replyImagePreviewUrl = useMemo(() => {
+    if (!replyAttachment?.type.startsWith("image/")) return null;
+    return URL.createObjectURL(replyAttachment);
+  }, [replyAttachment]);
+  useEffect(() => {
+    return () => {
+      if (replyImagePreviewUrl) URL.revokeObjectURL(replyImagePreviewUrl);
+    };
+  }, [replyImagePreviewUrl]);
   const [savingWaConnection, setSavingWaConnection] = useState(false);
   const [creatingContact, setCreatingContact] = useState(false);
   const [createTplName, setCreateTplName] = useState("");
@@ -1567,9 +1578,47 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
   }
 
+  function clearReplyAttachment() {
+    setReplyAttachment(null);
+    if (replyFileInputRef.current) replyFileInputRef.current.value = "";
+  }
+
+  async function sendReplyWithMedia() {
+    if (!selectedConversation || !replyAttachment || !token) return;
+    setSendingReply(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", replyAttachment);
+      fd.append("conversation_id", selectedConversation.conversation_id);
+      fd.append("to_phone_e164", selectedConversation.phone_e164);
+      if (waConnectionId.trim()) fd.append("connection_id", waConnectionId.trim());
+      if (replyText.trim()) fd.append("caption", replyText.trim());
+      const res = await fetch(`${API_BASE}/whatsapp/reply-media`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(formatApiErrorBody(text, res.status));
+      setReplyText("");
+      clearReplyAttachment();
+      await loadConversationMessages(selectedConversation);
+      flash("inboxReply", "Message sent.", "success");
+    } catch (error) {
+      flash("inboxReply", (error as Error).message, "error");
+    } finally {
+      setSendingReply(false);
+    }
+  }
+
   async function sendReply(event: FormEvent) {
     event.preventDefault();
-    if (!selectedConversation || !replyText.trim()) return;
+    if (!selectedConversation) return;
+    if (replyAttachment) {
+      await sendReplyWithMedia();
+      return;
+    }
+    if (!replyText.trim()) return;
     setSendingReply(true);
     try {
       await apiRequest("/whatsapp/reply-text", {
@@ -2903,8 +2952,64 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     {conversationMessages.length === 0 && <p className="text-sm text-zinc-500">Select a conversation</p>}
                   </div>
                   <form onSubmit={sendReply} className="space-y-2">
-                    <textarea className={INPUT_CLASS} rows={3} placeholder="Type reply..." value={replyText} onChange={(e) => setReplyText(e.target.value)} />
-                    <button className={BTN_PRIMARY} type="submit" disabled={!selectedConversation || sendingReply || !replyText.trim()}>
+                    <input
+                      ref={replyFileInputRef}
+                      type="file"
+                      className="hidden"
+                      accept="image/jpeg,image/png,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain"
+                      onChange={(e) => setReplyAttachment(e.target.files?.[0] ?? null)}
+                    />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        className={`${BTN_SECONDARY} !min-h-9 py-1.5 text-xs`}
+                        disabled={!selectedConversation || sendingReply}
+                        onClick={() => replyFileInputRef.current?.click()}
+                      >
+                        Attach image or document
+                      </button>
+                      {replyAttachment && (
+                        <>
+                          <span className="max-w-[12rem] truncate text-xs text-zinc-400" title={replyAttachment.name}>
+                            {replyAttachment.name}
+                          </span>
+                          <button
+                            type="button"
+                            className="text-xs font-medium text-rose-400 underline decoration-rose-400/60 hover:text-rose-300"
+                            onClick={clearReplyAttachment}
+                          >
+                            Remove
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {replyImagePreviewUrl && (
+                      <img
+                        src={replyImagePreviewUrl}
+                        alt=""
+                        className="max-h-36 max-w-full rounded-lg border border-zinc-600 object-contain"
+                      />
+                    )}
+                    <p className="text-[11px] text-zinc-500">
+                      Images: JPEG or PNG, max 5 MB. Documents: PDF, Office, TXT, max 32 MB. Text below is optional caption for
+                      attachments.
+                    </p>
+                    <textarea
+                      className={INPUT_CLASS}
+                      rows={3}
+                      placeholder={replyAttachment ? "Optional caption…" : "Type reply…"}
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                    />
+                    <button
+                      className={BTN_PRIMARY}
+                      type="submit"
+                      disabled={
+                        !selectedConversation ||
+                        sendingReply ||
+                        (!replyText.trim() && !replyAttachment)
+                      }
+                    >
                       {sendingReply ? (
                         <>
                           <Spinner /> Sending…
