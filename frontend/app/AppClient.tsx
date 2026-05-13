@@ -705,7 +705,6 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }>
   >([]);
   const wabaConnections = useMemo(() => waConnections.filter((c) => Boolean(c.waba_id)), [waConnections]);
-  const approvedTemplates = useMemo(() => templateItems.filter(isApprovedTemplate), [templateItems]);
   const [waAccessTokenPreview, setWaAccessTokenPreview] = useState("");
   const [waAppSecretConfigured, setWaAppSecretConfigured] = useState(false);
   const [waVerifyTokenConfigured, setWaVerifyTokenConfigured] = useState(false);
@@ -713,6 +712,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [waTemplateLanguage, setWaTemplateLanguage] = useState("en_US");
   const [waTestToPhone, setWaTestToPhone] = useState("");
   const [templateItems, setTemplateItems] = useState<TemplateItem[]>([]);
+  const approvedTemplates = useMemo(() => templateItems.filter(isApprovedTemplate), [templateItems]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<ConversationItem | null>(null);
   const [conversationMessages, setConversationMessages] = useState<ConversationMessage[]>([]);
