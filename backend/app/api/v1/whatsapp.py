@@ -20,6 +20,7 @@ from app.models.message import Message
 from app.models.message_template import MessageTemplate
 from app.models.membership import Membership
 from app.models.whatsapp_connection import WhatsAppConnection
+from app.schemas.campaign import MessagingWindowResponse
 from app.schemas.whatsapp import (
     BodyVariableExample,
     TemplateItemResponse,
@@ -35,6 +36,12 @@ from app.schemas.whatsapp import (
 from app.services.audit import log_admin_action
 from app.services.meta_client import MetaClient
 from app.services.outbound_whatsapp import send_whatsapp_template_message
+from app.services.messaging_policy import (
+    build_messaging_window,
+    is_customer_service_window_open,
+    session_send_blocked_message,
+)
+from app.services.meta_errors import format_meta_error
 from app.services.template_preview import body_template_variables, build_template_preview_from_stored
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
@@ -337,28 +344,7 @@ def _plain_verify_token(value: str | None) -> str:
 
 
 def _format_meta_send_error(exc: RuntimeError) -> str:
-    """Extract Meta Graph error message; flag true token expiry (code 190) separately."""
-    raw = str(exc)
-    message: str | None = None
-    for pattern in (r"'message'\s*:\s*'((?:\\'|[^'])*)'", r'"message"\s*:\s*"((?:\\"|[^"])*)"'):
-        match = re.search(pattern, raw)
-        if match:
-            message = match.group(1).replace("\\'", "'").replace('\\"', '"')
-            break
-    token_expired = bool(
-        re.search(r"['\"]code['\"]\s*:\s*190\b", raw)
-        or (message and re.search(r"session has expired|error validating access token", message, re.I))
-    )
-    if token_expired:
-        return (
-            "Meta access token expired or invalid. In Business Settings → System users, generate a new "
-            "long-lived token and save it in WhatsApp Settings."
-        )
-    if message:
-        return message
-    if len(raw) > 400:
-        return raw[:400] + "…"
-    return raw
+    return format_meta_error(exc)
 
 
 def _resolve_connection(
@@ -685,6 +671,9 @@ def list_conversations(
             "contact_name": contact.name,
             "phone_e164": contact.phone_e164,
             "updated_at": conversation.updated_at.isoformat(),
+            "messaging_window": MessagingWindowResponse(**build_messaging_window(contact.last_inbound_at)).model_dump(
+                mode="json"
+            ),
         }
         for conversation, contact in conversations
     ]
@@ -956,6 +945,13 @@ async def reply_text(
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
+    contact = db.query(Contact).filter(Contact.tenant_id == membership.tenant_id, Contact.id == conversation.contact_id).first()
+    if not contact or not is_customer_service_window_open(contact.last_inbound_at):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=session_send_blocked_message(contact.last_inbound_at if contact else None),
+        )
+
     try:
         data = await MetaClient.send_text_message(
             phone_number_id=connection.phone_number_id,
@@ -964,7 +960,7 @@ async def reply_text(
             text=payload.text,
         )
     except RuntimeError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Meta reply failed: {error}") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=format_meta_error(error)) from error
 
     message_id = None
     if isinstance(data.get("messages"), list) and data["messages"]:
@@ -1038,6 +1034,13 @@ async def reply_media(
     )
     if not conversation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    contact = db.query(Contact).filter(Contact.tenant_id == membership.tenant_id, Contact.id == conversation.contact_id).first()
+    if not contact or not is_customer_service_window_open(contact.last_inbound_at):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=session_send_blocked_message(contact.last_inbound_at if contact else None),
+        )
 
     cap = (caption or "").strip()[:1024] or None
     to_e164 = normalize_phone_e164(to_phone_e164)
@@ -1231,6 +1234,16 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> di
                 contact = Contact(tenant_id=tenant_id, phone_e164=normalized_phone, name=None, custom_attributes={})
                 db.add(contact)
                 db.flush()
+
+            inbound_at = datetime.now(timezone.utc)
+            raw_ts = inbound.get("timestamp")
+            if raw_ts is not None:
+                try:
+                    inbound_at = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                except (TypeError, ValueError, OSError):
+                    inbound_at = datetime.now(timezone.utc)
+            if contact.last_inbound_at is None or inbound_at > contact.last_inbound_at:
+                contact.last_inbound_at = inbound_at
 
             conversation = db.query(Conversation).filter(Conversation.tenant_id == tenant_id, Conversation.contact_id == contact.id).first()
             if not conversation:

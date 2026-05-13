@@ -18,6 +18,7 @@ class Contact(Base):
     phone_e164: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     custom_attributes: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

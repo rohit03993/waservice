@@ -12,10 +12,15 @@ from app.models.campaign_recipient import CampaignRecipient
 from app.models.contact import Contact
 from app.models.conversation import Conversation
 from app.models.message import Message
+from app.models.message_template import MessageTemplate
 from app.services.campaign_dispatch import queue_due_scheduled_campaigns
 from app.services.connection_resolver import resolve_active_connection
-from app.services.meta_client import MetaClient
+from app.services.messaging_policy import build_template_body_parameters, template_variables_from_stored
+from app.services.meta_errors import format_meta_error
+from app.services.outbound_whatsapp import send_whatsapp_template_message
 from app.services.queue import enqueue_campaign_job_with_delay, move_due_delayed_jobs, pop_campaign_job
+from app.services.template_preview import body_template_variables
+from app.schemas.whatsapp import template_body_parameters_to_meta_components
 
 MAX_ATTEMPTS = 3
 
@@ -58,22 +63,58 @@ def process_job(job: dict) -> None:
             db.commit()
             return
 
+        if not campaign.template_name or not campaign.template_language:
+            recipient.state = "failed"
+            recipient.last_error = "Campaign has no WhatsApp template. Recreate the campaign with an approved template."
+            db.commit()
+            return
+
+        tmpl_row = (
+            db.query(MessageTemplate)
+            .filter(
+                MessageTemplate.tenant_id == tenant_id,
+                MessageTemplate.name == campaign.template_name.strip(),
+                MessageTemplate.language == campaign.template_language.strip(),
+            )
+            .first()
+        )
+        if not tmpl_row or (tmpl_row.status or "").upper() != "APPROVED":
+            recipient.state = "failed"
+            recipient.last_error = "Template not found or not APPROVED in Meta"
+            db.commit()
+            return
+
         connection = resolve_active_connection(db=db, tenant_id=tenant_id)
         recipient.state = "processing"
         db.commit()
 
+        var_keys = body_template_variables(tmpl_row.components)
+        stored = template_variables_from_stored(recipient.template_variables)
+        raw_params = stored if stored else build_template_body_parameters(var_keys, contact_name=contact.name)
+        from app.schemas.whatsapp import TemplateSendBodyParameter
+
+        body_parameters = [
+            TemplateSendBodyParameter(
+                text=p["text"],
+                parameter_name=p.get("parameter_name"),
+            )
+            for p in raw_params
+        ]
+        components = template_body_parameters_to_meta_components(body_parameters)
+
         try:
-            response = asyncio.run(
-                MetaClient.send_text_message(
-                    phone_number_id=connection.phone_number_id,
-                    access_token=decrypt_secret(connection.access_token) or "",
+            result = asyncio.run(
+                send_whatsapp_template_message(
+                    db,
+                    tenant_id,
                     to_phone_e164=contact.phone_e164,
-                    text=campaign.message_text,
+                    template_name=campaign.template_name.strip(),
+                    language_code=campaign.template_language.strip(),
+                    connection_id=str(connection.id),
+                    template_components=components,
                 )
             )
-            message_id = None
-            if isinstance(response.get("messages"), list) and response["messages"]:
-                message_id = response["messages"][0].get("id")
+            message_id = result.message_id
 
             recipient.state = "sent"
             recipient.message_id = message_id
@@ -81,29 +122,12 @@ def process_job(job: dict) -> None:
             recipient.last_error = None
             recipient.next_retry_at = None
 
-            conversation = _get_or_create_conversation(db, tenant_id=tenant_id, contact_id=contact.id)
-            if message_id:
-                existing = db.query(Message).filter(Message.tenant_id == tenant_id, Message.wamid == message_id).first()
-                if not existing:
-                    db.add(
-                        Message(
-                            tenant_id=tenant_id,
-                            conversation_id=conversation.id,
-                            contact_id=contact.id,
-                            direction="outbound",
-                            wamid=message_id,
-                            type="text",
-                            status="sent",
-                            payload={"text": campaign.message_text, "meta_response": response},
-                        )
-                    )
-
-            if all(item.state in {"sent", "failed"} for item in campaign.recipients):
+            if campaign.campaign_type != "api" and all(item.state in {"sent", "failed"} for item in campaign.recipients):
                 campaign.status = "completed"
             db.commit()
         except Exception as exc:  # noqa: BLE001
             recipient.attempts = (recipient.attempts or 0) + 1
-            recipient.last_error = str(exc)[:500]
+            recipient.last_error = format_meta_error(exc)[:500]
             if recipient.attempts < MAX_ATTEMPTS:
                 delay_seconds = 30 * (2 ** (recipient.attempts - 1))
                 next_retry = datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
@@ -119,7 +143,7 @@ def process_job(job: dict) -> None:
             else:
                 recipient.state = "failed"
                 recipient.next_retry_at = None
-                if all(item.state in {"sent", "failed"} for item in campaign.recipients):
+                if campaign.campaign_type != "api" and all(item.state in {"sent", "failed"} for item in campaign.recipients):
                     campaign.status = "completed"
                 db.commit()
     finally:

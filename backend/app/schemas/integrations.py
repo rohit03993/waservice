@@ -32,6 +32,24 @@ class IntegrationSendTextResponse(BaseModel):
     message_id: str | None = None
 
 
+class IntegrationApiCampaignTriggerRequest(BaseModel):
+    """Trigger a send on a live API campaign (AiSensy-style)."""
+
+    to_phone_e164: str = Field(min_length=8, max_length=20)
+    name: str | None = Field(default=None, max_length=120, description="Optional contact name for new numbers")
+    body_parameters: list[TemplateSendBodyParameter] | None = Field(
+        default=None,
+        description="Override template variables; otherwise contact name is used for each slot.",
+    )
+
+
+class IntegrationApiCampaignTriggerResponse(BaseModel):
+    success: bool
+    campaign_id: str
+    recipient_id: str
+    queued: bool = True
+
+
 class IntegrationApiKeyCreateRequest(BaseModel):
     label: str | None = Field(default=None, max_length=120)
 

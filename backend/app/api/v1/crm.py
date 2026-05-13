@@ -12,6 +12,8 @@ from app.models.contact_tag import ContactTag
 from app.models.membership import Membership
 from app.models.tag import Tag
 from app.services.contact_merge import find_contact_by_normalized_phone
+from app.services.messaging_policy import build_messaging_window
+from app.schemas.campaign import MessagingWindowResponse
 from app.schemas.crm import (
     ContactCreateRequest,
     ContactFilterRequest,
@@ -29,6 +31,7 @@ def _tag_to_schema(tag: Tag) -> TagResponse:
 
 
 def _contact_to_schema(contact: Contact, *, merged_with_existing: bool = False) -> ContactResponse:
+    window = build_messaging_window(contact.last_inbound_at)
     return ContactResponse(
         id=contact.id,
         phone_e164=normalize_phone_e164(contact.phone_e164),
@@ -38,6 +41,7 @@ def _contact_to_schema(contact: Contact, *, merged_with_existing: bool = False) 
         created_at=contact.created_at,
         updated_at=contact.updated_at,
         merged_with_existing=merged_with_existing,
+        messaging_window=MessagingWindowResponse(**window),
     )
 
 

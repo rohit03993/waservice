@@ -9,6 +9,16 @@ type Tag = {
   created_at: string;
 };
 
+type MessagingWindow = {
+  is_open: boolean;
+  last_inbound_at: string | null;
+  expires_at: string | null;
+  seconds_remaining: number | null;
+  can_send_session: boolean;
+  can_send_template: boolean;
+  session_hint: string;
+};
+
 type Contact = {
   id: string;
   phone_e164: string;
@@ -18,24 +28,44 @@ type Contact = {
   created_at: string;
   updated_at: string;
   merged_with_existing?: boolean;
+  messaging_window?: MessagingWindow;
 };
 
 type CampaignRecipient = {
   id: string;
   contact_id: string;
   state: string;
+  last_error?: string | null;
+  sent_at?: string | null;
   created_at: string;
+};
+
+type CampaignCostEstimate = {
+  recipient_count: number;
+  billable_messages: number;
+  open_window_free_messages?: number;
+  rate_per_message_inr: number;
+  estimated_total_inr: number;
+  currency: string;
+  template_category: string | null;
+  pricing_model: string;
+  rate_note: string;
+  disclaimer: string;
 };
 
 type Campaign = {
   id: string;
   name: string;
-  message_text: string;
+  campaign_type: string;
+  template_name: string | null;
+  template_language: string | null;
+  message_text: string | null;
   status: string;
   scheduled_at: string | null;
   created_at: string;
   updated_at: string;
   recipients: CampaignRecipient[];
+  cost_estimate?: CampaignCostEstimate | null;
 };
 
 type TemplateItem = {
@@ -54,6 +84,7 @@ type ConversationItem = {
   contact_name: string | null;
   phone_e164: string;
   updated_at: string;
+  messaging_window?: MessagingWindow;
 };
 
 type ConversationMessage = {
@@ -274,32 +305,236 @@ function formatApiErrorBody(text: string, status: number): string {
   return trimmed;
 }
 
+function getSelectedTemplate(templateKey: string, templateItems: TemplateItem[]): TemplateItem | undefined {
+  return templateItems.find((it) => `${it.name}__${it.language}` === templateKey);
+}
+
+function smartDefaultForVariable(key: string, contactName: string | null, category?: string | null): string {
+  const kl = key.toLowerCase();
+  if (!/^\d+$/.test(key) && /name|customer|first|user|recipient/.test(kl)) {
+    return (contactName || "").trim();
+  }
+  if (category?.toUpperCase() === "AUTHENTICATION") {
+    return "";
+  }
+  return "";
+}
+
+function initTemplateVarValues(template: TemplateItem | undefined, contactName: string | null): Record<string, string> {
+  if (!template?.body_variables?.length) return {};
+  const out: Record<string, string> = {};
+  for (const key of template.body_variables) {
+    out[key] = smartDefaultForVariable(key, contactName, template.category);
+  }
+  if (
+    template.body_variables.length === 1 &&
+    !out[template.body_variables[0]] &&
+    template.category?.toUpperCase() !== "AUTHENTICATION"
+  ) {
+    out[template.body_variables[0]] = (contactName || "Customer").trim() || "Customer";
+  }
+  return out;
+}
+
+function validateTemplateVarValues(
+  bodyVars: string[],
+  varValues: Record<string, string>,
+  category?: string | null
+): string | null {
+  for (const key of bodyVars) {
+    if (varValues[key]?.trim()) continue;
+    if (category?.toUpperCase() === "AUTHENTICATION" || /^\d+$/.test(key)) {
+      return `Enter a value for variable {{${key}}}.`;
+    }
+  }
+  return null;
+}
+
 function buildTemplateSendPayload(
   templateKey: string,
   templateItems: TemplateItem[],
-  recipientName: string | null
+  recipientName: string | null,
+  varValues?: Record<string, string>
 ): { template_name: string; language_code: string; body_parameters?: Array<{ type: "text"; text: string; parameter_name?: string }> } | null {
   if (!templateKey) return null;
   const sep = templateKey.indexOf("__");
   const template_name = sep >= 0 ? templateKey.slice(0, sep) : templateKey;
   const language_code = sep >= 0 ? templateKey.slice(sep + 2) : "en_US";
-  const selected = templateItems.find((it) => `${it.name}__${it.language}` === templateKey);
+  const selected = getSelectedTemplate(templateKey, templateItems);
   const bodyVars = selected?.body_variables ?? [];
   const fillValue = (recipientName || "Customer").trim() || "Customer";
   const body_parameters =
     bodyVars.length > 0
       ? bodyVars.map((key) => {
           const isPositional = /^\d+$/.test(key);
+          const fromUser = varValues?.[key]?.trim();
+          const text =
+            fromUser ||
+            smartDefaultForVariable(key, recipientName, selected?.category) ||
+            (selected?.category?.toUpperCase() === "AUTHENTICATION" ? "" : fillValue);
           return isPositional
-            ? { type: "text" as const, text: fillValue }
-            : { type: "text" as const, text: fillValue, parameter_name: key };
+            ? { type: "text" as const, text }
+            : { type: "text" as const, text, parameter_name: key };
         })
       : undefined;
   return { template_name, language_code, body_parameters };
 }
 
+function TemplateVariableFields({
+  templateKey,
+  templateItems,
+  values,
+  onChange,
+  contactName,
+  broadcastHint,
+}: {
+  templateKey: string;
+  templateItems: TemplateItem[];
+  values: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+  contactName?: string | null;
+  broadcastHint?: boolean;
+}) {
+  const template = getSelectedTemplate(templateKey, templateItems);
+  const vars = template?.body_variables ?? [];
+  if (!vars.length) return null;
+  return (
+    <div className="space-y-2 rounded-lg border border-amber-800/40 bg-amber-950/20 p-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-200/90">Template variables</p>
+      {broadcastHint && (
+        <p className="text-[11px] text-zinc-400">
+          Name-like variables are filled per contact from CRM. Set shared values here (e.g. promo code). For unique OTPs per
+          person, use CSV columns or an API campaign.
+        </p>
+      )}
+      {vars.map((key) => {
+        const isPositional = /^\d+$/.test(key);
+        const label = isPositional ? `Variable {{${key}}}` : `{{${key}}}`;
+        const placeholder =
+          template?.category?.toUpperCase() === "AUTHENTICATION" && isPositional
+            ? "e.g. 123456"
+            : smartDefaultForVariable(key, contactName ?? null, template?.category) || "Enter value";
+        return (
+          <div key={key}>
+            <label className="mb-1 block text-xs font-medium text-zinc-300">{label}</label>
+            <input
+              className={INPUT_CLASS}
+              value={values[key] ?? ""}
+              placeholder={placeholder}
+              onChange={(e) => onChange(key, e.target.value)}
+            />
+          </div>
+        );
+      })}
+      <p className="text-[10px] text-zinc-500">
+        Language must match Meta exactly ({template?.language || "sync templates"}). Wrong language causes error #132001.
+      </p>
+    </div>
+  );
+}
+
 function isApprovedTemplate(item: TemplateItem): boolean {
   return (item.status || "").toUpperCase() === "APPROVED";
+}
+
+function formatWindowRemaining(seconds: number | null | undefined): string {
+  if (seconds == null || seconds <= 0) return "";
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m remaining`;
+  return `${minutes}m remaining`;
+}
+
+function windowBadgeLabel(window: MessagingWindow | undefined): string {
+  if (!window) return "Unknown";
+  return window.is_open ? "Reply open" : "Template only";
+}
+
+function windowBadgeClass(window: MessagingWindow | undefined): string {
+  if (!window) return "rounded-full bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400";
+  return window.is_open
+    ? "rounded-full bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-300"
+    : "rounded-full bg-amber-900/50 px-2 py-0.5 text-xs text-amber-200";
+}
+
+type CampaignLaunchType = "contacts" | "csv" | "api";
+
+function campaignTypeLabel(campaignType: string): string {
+  if (campaignType === "csv") return "CSV broadcast";
+  if (campaignType === "api") return "API campaign";
+  return "Contact broadcast";
+}
+
+/** India reference rates per delivered template (Meta per-message billing). */
+const META_INR_PER_MESSAGE: Record<string, number> = {
+  MARKETING: 0.8846,
+  UTILITY: 0.125,
+  AUTHENTICATION: 0.125,
+  SERVICE: 0,
+};
+
+function normalizeTemplateCategory(category: string | null | undefined): string {
+  if (!category) return "UNKNOWN";
+  return category.trim().toUpperCase().replace(/-/g, "_");
+}
+
+function rateInrPerMessage(category: string | null | undefined): number {
+  const key = normalizeTemplateCategory(category);
+  if (key in META_INR_PER_MESSAGE) return META_INR_PER_MESSAGE[key];
+  if (key.includes("MARKETING")) return META_INR_PER_MESSAGE.MARKETING;
+  if (key.includes("UTILITY")) return META_INR_PER_MESSAGE.UTILITY;
+  if (key.includes("AUTHENTICATION")) return META_INR_PER_MESSAGE.AUTHENTICATION;
+  return META_INR_PER_MESSAGE.MARKETING;
+}
+
+function estimateCampaignCostLocal(
+  templateCategory: string | null | undefined,
+  recipientCount: number
+): CampaignCostEstimate {
+  const count = Math.max(0, recipientCount);
+  const rate = rateInrPerMessage(templateCategory);
+  const cat = normalizeTemplateCategory(templateCategory);
+  return {
+    recipient_count: count,
+    billable_messages: count,
+    rate_per_message_inr: rate,
+    estimated_total_inr: Math.round(count * rate * 100) / 100,
+    currency: "INR",
+    template_category: cat === "UNKNOWN" ? null : cat,
+    pricing_model: "per_message",
+    rate_note: `₹${rate.toFixed(4)} per delivered template (India reference)`,
+    disclaimer:
+      "Estimate only. Actual Meta charges vary by delivery, country, and category. Utility may be free inside 24h window.",
+  };
+}
+
+function CampaignCostPanel({
+  estimate,
+  perTrigger,
+}: {
+  estimate: CampaignCostEstimate | null;
+  perTrigger?: boolean;
+}) {
+  if (!estimate || estimate.recipient_count <= 0) return null;
+  return (
+    <div className="rounded-lg border border-emerald-900/40 bg-emerald-950/25 p-3 text-sm">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400/90">Approx. Meta cost</p>
+      <p className="mt-1 text-lg font-semibold text-emerald-100">{formatMetaInr(estimate.estimated_total_inr)}</p>
+      <p className="mt-1 text-xs text-zinc-400">
+        {perTrigger
+          ? `${formatMetaInr(estimate.rate_per_message_inr)} per API trigger`
+          : `${estimate.billable_messages} × ${formatMetaInr(estimate.rate_per_message_inr)}`}
+        {estimate.template_category ? ` · ${estimate.template_category}` : ""}
+      </p>
+      <p className="mt-2 text-[10px] text-zinc-500">{estimate.disclaimer}</p>
+    </div>
+  );
+}
+
+async function countCsvDataRows(file: File): Promise<number> {
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  return Math.max(0, lines.length - 1);
 }
 
 const INBOX_MEDIA_TYPES = new Set(["image", "document", "sticker", "video", "audio"]);
@@ -681,8 +916,12 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [editTagIds, setEditTagIds] = useState<string[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [campaignName, setCampaignName] = useState("");
-  const [campaignMessage, setCampaignMessage] = useState("");
+  const [campaignLaunchType, setCampaignLaunchType] = useState<CampaignLaunchType>("contacts");
   const [campaignContactIds, setCampaignContactIds] = useState<string[]>([]);
+  const [campaignCsvFile, setCampaignCsvFile] = useState<File | null>(null);
+  const [csvRowCount, setCsvRowCount] = useState(0);
+  const [csvDraftCampaignId, setCsvDraftCampaignId] = useState<string | null>(null);
+  const [selectedApiCampaignId, setSelectedApiCampaignId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<DashboardSection>(normalizedInitialSection);
   const [waPhoneNumberId, setWaPhoneNumberId] = useState("");
   const [waAccessToken, setWaAccessToken] = useState("");
@@ -715,6 +954,44 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [waTestToPhone, setWaTestToPhone] = useState("");
   const [templateItems, setTemplateItems] = useState<TemplateItem[]>([]);
   const approvedTemplates = useMemo(() => templateItems.filter(isApprovedTemplate), [templateItems]);
+
+  const launchRecipientCount = useMemo(() => {
+    if (campaignLaunchType === "contacts") return campaignContactIds.length;
+    if (campaignLaunchType === "csv") return csvRowCount;
+    return 1;
+  }, [campaignLaunchType, campaignContactIds.length, csvRowCount]);
+
+  const launchCostEstimate = useMemo(() => {
+    const sel = approvedTemplates.find((t) => t.name === waTemplateName && t.language === waTemplateLanguage);
+    if (!sel || launchRecipientCount <= 0) return null;
+    return estimateCampaignCostLocal(sel.category, launchRecipientCount);
+  }, [approvedTemplates, waTemplateName, waTemplateLanguage, launchRecipientCount]);
+
+  const allCampaignContactsSelected = contacts.length > 0 && campaignContactIds.length === contacts.length;
+
+  function toggleCampaignContact(contactId: string) {
+    setCampaignContactIds((prev) =>
+      prev.includes(contactId) ? prev.filter((id) => id !== contactId) : [...prev, contactId]
+    );
+  }
+
+  function toggleAllCampaignContacts() {
+    setCampaignContactIds(allCampaignContactsSelected ? [] : contacts.map((c) => c.id));
+  }
+
+  useEffect(() => {
+    if (!campaignCsvFile) {
+      setCsvRowCount(0);
+      return;
+    }
+    let cancelled = false;
+    void countCsvDataRows(campaignCsvFile).then((n) => {
+      if (!cancelled) setCsvRowCount(n);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignCsvFile]);
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<ConversationItem | null>(null);
   const [conversationMessages, setConversationMessages] = useState<ConversationMessage[]>([]);
@@ -735,6 +1012,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const feedbackTimersRef = useRef<Partial<Record<FeedbackSlot, number>>>({});
   const [sendingQuickTemplate, setSendingQuickTemplate] = useState(false);
   const [inboxTemplateKey, setInboxTemplateKey] = useState("");
+  const [inboxTemplateVars, setInboxTemplateVars] = useState<Record<string, string>>({});
+  const [quickTemplateVars, setQuickTemplateVars] = useState<Record<string, string>>({});
+  const [campaignTemplateVars, setCampaignTemplateVars] = useState<Record<string, string>>({});
   const [sendingInboxTemplate, setSendingInboxTemplate] = useState(false);
   const [sendingTemplateTest, setSendingTemplateTest] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
@@ -1222,24 +1502,94 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
   async function createCampaign(event: FormEvent) {
     event.preventDefault();
-    if (!campaignName.trim() || !campaignMessage.trim()) return;
+    if (!campaignName.trim() || !waTemplateName.trim()) {
+      flash("campaignCreate", "Campaign name and an approved template are required.", "error");
+      return;
+    }
+    const selected = approvedTemplates.find((t) => t.name === waTemplateName && t.language === waTemplateLanguage);
+    if (!selected) {
+      flash("campaignCreate", "Choose an approved template from the list.", "error");
+      return;
+    }
+    if (campaignLaunchType === "contacts" && campaignContactIds.length === 0) {
+      flash("campaignCreate", "Select at least one contact for a contact broadcast.", "error");
+      return;
+    }
+    if (campaignLaunchType === "csv" && !campaignCsvFile && !csvDraftCampaignId) {
+      flash("campaignCreate", "Choose a CSV file to import recipients.", "error");
+      return;
+    }
     try {
-      await apiRequest<Campaign>("/campaigns", {
+      const created = await apiRequest<Campaign>("/campaigns", {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({
           name: campaignName,
-          message_text: campaignMessage || `Template: ${waTemplateName || "not-selected"} (${waTemplateLanguage})`,
-          contact_ids: campaignContactIds
+          template_name: waTemplateName,
+          template_language: waTemplateLanguage,
+          campaign_type: campaignLaunchType,
+          contact_ids: campaignLaunchType === "contacts" ? campaignContactIds : [],
+          template_variable_defaults: Object.fromEntries(
+            Object.entries(campaignTemplateVars).filter(([, v]) => v.trim())
+          )
         })
       });
+      if (campaignLaunchType === "csv" && campaignCsvFile) {
+        const fd = new FormData();
+        fd.append("file", campaignCsvFile);
+        const res = await fetch(`${API_BASE}/campaigns/${created.id}/import-csv`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: fd
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error(formatApiErrorBody(text, res.status));
+        const imported = JSON.parse(text) as { added_recipients: number; skipped_rows: number };
+        flash(
+          "campaignCreate",
+          `CSV campaign created. Imported ${imported.added_recipients} recipients (${imported.skipped_rows} skipped).`,
+          "success"
+        );
+        setCampaignCsvFile(null);
+        setCsvDraftCampaignId(null);
+      } else if (campaignLaunchType === "api") {
+        setSelectedApiCampaignId(created.id);
+        flash("campaignCreate", "API campaign created. Click Go Live, then use the integration API to trigger sends.", "success");
+      } else {
+        flash("campaignCreate", "Contact broadcast created. Click Start to send.", "success");
+      }
       setCampaignName("");
-      setCampaignMessage("");
       setCampaignContactIds([]);
       await loadCampaigns();
-      flash("campaignCreate", "Campaign created.", "success");
     } catch (error) {
       flash("campaignCreate", (error as Error).message, "error");
+    }
+  }
+
+  async function importCsvToCampaign(campaignId: string, file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${API_BASE}/campaigns/${campaignId}/import-csv`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: fd
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(formatApiErrorBody(text, res.status));
+    return JSON.parse(text) as { added_recipients: number; skipped_rows: number };
+  }
+
+  async function goLiveApiCampaign(campaignId: string) {
+    try {
+      await apiRequest<{ status: string; message: string }>(`/campaigns/${campaignId}/go-live`, {
+        method: "POST",
+        headers: authHeaders
+      });
+      setSelectedApiCampaignId(campaignId);
+      await loadCampaigns();
+      flash("campaignActions", "API campaign is live. Use POST /integrations/campaigns/{id}/trigger with your integration key.", "success");
+    } catch (error) {
+      flash("campaignActions", (error as Error).message, "error");
     }
   }
 
@@ -1435,7 +1785,13 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       flash("contactQuickSend", "Choose a template first.", "error");
       return;
     }
-    const payload = buildTemplateSendPayload(quickTemplateKey, templateItems, quickSendContact.name);
+    const template = getSelectedTemplate(quickTemplateKey, templateItems);
+    const err = validateTemplateVarValues(template?.body_variables ?? [], quickTemplateVars, template?.category);
+    if (err) {
+      flash("contactQuickSend", err, "error");
+      return;
+    }
+    const payload = buildTemplateSendPayload(quickTemplateKey, templateItems, quickSendContact.name, quickTemplateVars);
     if (!payload) return;
     setSendingQuickTemplate(true);
     try {
@@ -1463,7 +1819,18 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       flash("inboxTemplate", "Select a conversation and template first.", "error");
       return;
     }
-    const payload = buildTemplateSendPayload(inboxTemplateKey, templateItems, selectedConversation.contact_name);
+    const template = getSelectedTemplate(inboxTemplateKey, templateItems);
+    const err = validateTemplateVarValues(template?.body_variables ?? [], inboxTemplateVars, template?.category);
+    if (err) {
+      flash("inboxTemplate", err, "error");
+      return;
+    }
+    const payload = buildTemplateSendPayload(
+      inboxTemplateKey,
+      templateItems,
+      selectedConversation.contact_name,
+      inboxTemplateVars
+    );
     if (!payload) return;
     setSendingInboxTemplate(true);
     try {
@@ -1551,7 +1918,37 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
   useEffect(() => {
     setInboxTemplateKey("");
+    setInboxTemplateVars({});
   }, [selectedConversation?.conversation_id]);
+
+  useEffect(() => {
+    if (!inboxTemplateKey) {
+      setInboxTemplateVars({});
+      return;
+    }
+    const t = getSelectedTemplate(inboxTemplateKey, templateItems);
+    setInboxTemplateVars(initTemplateVarValues(t, selectedConversation?.contact_name ?? null));
+  }, [inboxTemplateKey, selectedConversation?.contact_name, templateItems]);
+
+  useEffect(() => {
+    if (!quickTemplateKey) {
+      setQuickTemplateVars({});
+      return;
+    }
+    const t = getSelectedTemplate(quickTemplateKey, templateItems);
+    setQuickTemplateVars(initTemplateVarValues(t, quickSendContact?.name ?? null));
+  }, [quickTemplateKey, quickSendContact?.name, templateItems]);
+
+  useEffect(() => {
+    const key =
+      waTemplateName && waTemplateLanguage ? `${waTemplateName}__${waTemplateLanguage}` : "";
+    if (!key) {
+      setCampaignTemplateVars({});
+      return;
+    }
+    const t = getSelectedTemplate(key, approvedTemplates);
+    setCampaignTemplateVars(initTemplateVarValues(t, null));
+  }, [waTemplateName, waTemplateLanguage, approvedTemplates]);
 
   async function sendTemplateTest(event: FormEvent) {
     event.preventDefault();
@@ -1837,6 +2234,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
   async function sendReplyWithMedia() {
     if (!selectedConversation || !replyAttachment || !token) return;
+    if (selectedConversation.messaging_window && !selectedConversation.messaging_window.can_send_session) {
+      flash("inboxReply", selectedConversation.messaging_window.session_hint, "error");
+      return;
+    }
     setSendingReply(true);
     try {
       const fd = new FormData();
@@ -1866,6 +2267,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   async function sendReply(event: FormEvent) {
     event.preventDefault();
     if (!selectedConversation) return;
+    if (selectedConversation.messaging_window && !selectedConversation.messaging_window.can_send_session) {
+      flash("inboxReply", selectedConversation.messaging_window.session_hint, "error");
+      return;
+    }
     if (replyAttachment) {
       await sendReplyWithMedia();
       return;
@@ -2543,6 +2948,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         <tr>
                           <th className="px-3 py-2">Name</th>
                           <th className="px-3 py-2">Phone</th>
+                          <th className="px-3 py-2">Messaging</th>
                           <th className="px-3 py-2">Tags</th>
                           <th className="px-3 py-2">Attributes</th>
                           <th className="px-3 py-2">Actions</th>
@@ -2553,6 +2959,16 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           <tr key={contact.id} className="border-t border-zinc-700">
                             <td className="px-3 py-2">{contact.name || "-"}</td>
                             <td className="px-3 py-2">{contact.phone_e164}</td>
+                            <td className="px-3 py-2">
+                              <span className={windowBadgeClass(contact.messaging_window)} title={contact.messaging_window?.session_hint}>
+                                {windowBadgeLabel(contact.messaging_window)}
+                              </span>
+                              {contact.messaging_window?.is_open && contact.messaging_window.seconds_remaining != null && (
+                                <p className="mt-1 text-[10px] text-zinc-500">
+                                  {formatWindowRemaining(contact.messaging_window.seconds_remaining)}
+                                </p>
+                              )}
+                            </td>
                             <td className="px-3 py-2">{contact.tags.map((tag) => tag.name).join(", ") || "-"}</td>
                             <td className="px-3 py-2">{Object.entries(contact.custom_attributes || {}).map(([k, v]) => `${k}:${String(v)}`).join(", ") || "-"}</td>
                             <td className="px-3 py-2">
@@ -2587,7 +3003,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         ))}
                         {contacts.length === 0 && (
                           <tr>
-                            <td className="px-3 py-4 text-center text-zinc-500" colSpan={5}>
+                            <td className="px-3 py-4 text-center text-zinc-500" colSpan={6}>
                               No contacts found
                             </td>
                           </tr>
@@ -2631,7 +3047,14 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                             </div>
                           );
                         })()}
-                        <p className="text-xs text-zinc-500">Uses the same Meta flow as “Send Template Test” in Settings (approved template required).</p>
+                        <TemplateVariableFields
+                          templateKey={quickTemplateKey}
+                          templateItems={templateItems}
+                          values={quickTemplateVars}
+                          onChange={(key, value) => setQuickTemplateVars((prev) => ({ ...prev, [key]: value }))}
+                          contactName={quickSendContact.name}
+                        />
+                        <p className="text-xs text-zinc-500">Approved template required. Fill every variable before sending.</p>
                       </>
                     )}
                     <div className="flex flex-wrap gap-2">
@@ -2700,45 +3123,196 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
             )}
 
             {activeTab === "campaigns" && (
-              <section className="grid gap-4 lg:grid-cols-2">
-                <div className={`${CARD_CLASS} space-y-3`}>
-                  <h2 className="text-base font-semibold text-zinc-100">Create Campaign</h2>
-                  <form onSubmit={createCampaign} className="space-y-2">
-                    <input className={INPUT_CLASS} placeholder="Campaign name" value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
-                    <textarea className={INPUT_CLASS} placeholder="Campaign message text" value={campaignMessage} onChange={(e) => setCampaignMessage(e.target.value)} rows={4} />
-                    <div className="grid gap-2 md:grid-cols-2">
-                      <select
-                        className={INPUT_CLASS}
-                        value={waTemplateName}
-                        onChange={(e) => {
-                          const selected = templateItems.find((item) => item.name === e.target.value);
-                          setWaTemplateName(e.target.value);
-                          if (selected) setWaTemplateLanguage(selected.language);
-                        }}
+              <section className="grid gap-4 xl:grid-cols-2">
+                <div className={`${CARD_CLASS} space-y-4`}>
+                  <div>
+                    <h2 className="text-base font-semibold text-zinc-100">Launch campaign</h2>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      Contact broadcast, CSV upload, or API-triggered sends (AiSensy / WATI style).
+                    </p>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    {(
+                      [
+                        ["contacts", "Contact broadcast", "Pick CRM contacts"],
+                        ["csv", "CSV broadcast", "Upload phone list"],
+                        ["api", "API campaign", "External triggers"],
+                      ] as const
+                    ).map(([type, title, hint]) => (
+                      <button
+                        key={type}
+                        type="button"
+                        className={`rounded-xl border p-3 text-left text-sm transition ${
+                          campaignLaunchType === type
+                            ? "border-crm-accent bg-crm-accent/15 text-zinc-100"
+                            : "border-zinc-600 text-zinc-400 hover:border-zinc-500"
+                        }`}
+                        onClick={() => setCampaignLaunchType(type)}
                       >
-                        <option value="">Select template</option>
-                        {templateItems.map((item) => (
-                          <option key={`${item.name}:${item.language}`} value={item.name}>
-                            {item.name} ({item.language})
-                          </option>
-                        ))}
-                      </select>
-                      <input className={INPUT_CLASS} placeholder="Template language" value={waTemplateLanguage} onChange={(e) => setWaTemplateLanguage(e.target.value)} />
-                    </div>
-                    <select
-                      multiple
-                      className={`${INPUT_CLASS} h-36`}
-                      value={campaignContactIds}
-                      onChange={(e) => setCampaignContactIds(Array.from(e.target.selectedOptions).map((opt) => opt.value))}
+                        <p className="font-semibold">{title}</p>
+                        <p className="mt-1 text-[11px] opacity-80">{hint}</p>
+                      </button>
+                    ))}
+                  </div>
+                  <form onSubmit={createCampaign} className="space-y-3">
+                    <input className={INPUT_CLASS} placeholder="Campaign name" value={campaignName} onChange={(e) => setCampaignName(e.target.value)} />
+                    {approvedTemplates.length === 0 ? (
+                      <p className="text-sm text-amber-200/90">
+                        No approved templates loaded. Use Load Templates, then pick an approved template.
+                      </p>
+                    ) : (
+                      <>
+                        <select
+                          className={INPUT_CLASS}
+                          value={waTemplateName && waTemplateLanguage ? `${waTemplateName}__${waTemplateLanguage}` : ""}
+                          onChange={(e) => {
+                            const selected = approvedTemplates.find((item) => `${item.name}__${item.language}` === e.target.value);
+                            if (selected) {
+                              setWaTemplateName(selected.name);
+                              setWaTemplateLanguage(selected.language);
+                            } else {
+                              setWaTemplateName("");
+                              setWaTemplateLanguage("en_US");
+                            }
+                          }}
+                        >
+                          <option value="">Select approved template</option>
+                          {approvedTemplates.map((item) => (
+                            <option key={`${item.name}:${item.language}`} value={`${item.name}__${item.language}`}>
+                              {item.name} ({item.language})
+                            </option>
+                          ))}
+                        </select>
+                        {(() => {
+                          const sel = approvedTemplates.find((it) => it.name === waTemplateName && it.language === waTemplateLanguage);
+                          if (!sel?.preview_text?.trim()) return null;
+                          return (
+                            <div className="rounded-lg border border-zinc-600 bg-zinc-800/50 p-3">
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Template preview</p>
+                              <p className="whitespace-pre-wrap text-sm text-zinc-200">{sel.preview_text.trim()}</p>
+                            </div>
+                          );
+                        })()}
+                        <CampaignCostPanel
+                          estimate={launchCostEstimate}
+                          perTrigger={campaignLaunchType === "api"}
+                        />
+                        {waTemplateName && waTemplateLanguage && (
+                          <TemplateVariableFields
+                            templateKey={`${waTemplateName}__${waTemplateLanguage}`}
+                            templateItems={approvedTemplates}
+                            values={campaignTemplateVars}
+                            onChange={(key, value) =>
+                              setCampaignTemplateVars((prev) => ({ ...prev, [key]: value }))
+                            }
+                            broadcastHint={campaignLaunchType !== "api"}
+                          />
+                        )}
+                      </>
+                    )}
+                    {campaignLaunchType === "contacts" && (
+                      <>
+                        <div className="rounded-xl border border-zinc-600 bg-black/30">
+                          <label className="flex cursor-pointer items-center gap-3 border-b border-zinc-700 px-3 py-2.5 text-sm font-medium text-zinc-200 hover:bg-zinc-800/40">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-zinc-500 accent-crm-accent"
+                              checked={allCampaignContactsSelected}
+                              onChange={toggleAllCampaignContacts}
+                              disabled={contacts.length === 0}
+                            />
+                            <span>
+                              Select all
+                              <span className="ml-1 font-normal text-zinc-500">
+                                ({campaignContactIds.length} of {contacts.length} selected)
+                              </span>
+                            </span>
+                          </label>
+                          <div className="max-h-44 overflow-y-auto divide-y divide-zinc-800">
+                            {contacts.length === 0 ? (
+                              <p className="px-3 py-4 text-sm text-zinc-500">No contacts loaded. Open Contacts tab or refresh.</p>
+                            ) : (
+                              contacts.map((contact) => {
+                                const checked = campaignContactIds.includes(contact.id);
+                                return (
+                                  <label
+                                    key={contact.id}
+                                    className={`flex cursor-pointer items-start gap-3 px-3 py-2.5 text-sm hover:bg-zinc-800/30 ${
+                                      checked ? "bg-crm-accent/10" : ""
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-500 accent-crm-accent"
+                                      checked={checked}
+                                      onChange={() => toggleCampaignContact(contact.id)}
+                                    />
+                                    <span>
+                                      <span className="font-medium text-zinc-100">{contact.name || "Unnamed"}</span>
+                                      <span className="block text-xs text-zinc-500">{contact.phone_e164}</span>
+                                    </span>
+                                  </label>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-zinc-500">Tick one or many recipients, or use Select all. Body variables use each contact&apos;s name.</p>
+                      </>
+                    )}
+                    {campaignLaunchType === "csv" && (
+                      <>
+                        <input
+                          type="file"
+                          accept=".csv,text/csv"
+                          className={INPUT_CLASS}
+                          onChange={(e) => setCampaignCsvFile(e.target.files?.[0] ?? null)}
+                        />
+                        {campaignCsvFile && (
+                          <p className="text-xs text-zinc-400">
+                            File: <span className="text-zinc-200">{campaignCsvFile.name}</span>
+                            {csvRowCount > 0 ? ` · ${csvRowCount} rows` : " · counting rows…"}
+                          </p>
+                        )}
+                        <div className="rounded-lg border border-zinc-600 bg-zinc-900/60 p-3 text-xs text-zinc-400">
+                          <p className="font-semibold text-zinc-300">How CSV broadcast works</p>
+                          <ol className="mt-2 list-inside list-decimal space-y-1">
+                            <li>Create the campaign with name + approved template.</li>
+                            <li>Upload a UTF-8 CSV — we import phones and add them as recipients.</li>
+                            <li>New numbers become contacts; duplicates in the same campaign are skipped.</li>
+                            <li>Click <strong className="text-zinc-200">Start broadcast</strong> in the list on the right.</li>
+                          </ol>
+                          <p className="mt-3 font-medium text-zinc-300">Example CSV</p>
+                          <pre className="mt-1 overflow-x-auto rounded bg-black/50 p-2 font-mono text-[11px] text-emerald-200/90">{`phone_e164,name,var1
+919876543210,Rohit,Hi Rohit
+918109462946,Neha,Hi Neha`}</pre>
+                          <p className="mt-2">
+                            Phone column: <code className="text-zinc-300">phone_e164</code>, <code className="text-zinc-300">phone</code>, or{" "}
+                            <code className="text-zinc-300">mobile</code>. Extra columns map to template variables (
+                            <code className="text-zinc-300">var1</code>, <code className="text-zinc-300">var2</code>, or named placeholders).
+                          </p>
+                        </div>
+                      </>
+                    )}
+                    {campaignLaunchType === "api" && (
+                      <div className="space-y-2">
+                        <div className="rounded-lg border border-indigo-800/50 bg-indigo-950/30 p-3 text-xs text-indigo-100">
+                          <p className="font-semibold">AiSensy-style API campaign</p>
+                          <ul className="mt-2 list-inside list-disc space-y-1">
+                            <li>Fixed template per automation (cart abandon, payment receipt).</li>
+                            <li>Go Live, then POST /integrations/campaigns/&#123;id&#125;/trigger</li>
+                            <li>Each trigger ≈ one billable template message.</li>
+                          </ul>
+                        </div>
+                        <p className="text-[11px] text-zinc-500">Integration key: Admin → Integrations.</p>
+                      </div>
+                    )}
+                    <button
+                      className="rounded-xl bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      type="submit"
+                      disabled={approvedTemplates.length === 0}
                     >
-                      {contacts.map((contact) => (
-                        <option key={contact.id} value={contact.id}>
-                          {(contact.name || "Unnamed")} - {contact.phone_e164}
-                        </option>
-                      ))}
-                    </select>
-                    <button className="rounded-xl bg-purple-600 px-4 py-2 text-sm text-white hover:bg-purple-700" type="submit">
-                      Create Campaign
+                      {campaignLaunchType === "api" ? "Create API campaign" : "Create campaign"}
                     </button>
                     <InlineFeedbackText feedback={inlineFeedback.campaignCreate} />
                   </form>
@@ -2772,19 +3346,83 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       <div key={campaign.id} className="rounded-xl border border-zinc-600 p-3">
                         <div className="flex items-center justify-between">
                           <p className="font-medium text-zinc-100">{campaign.name}</p>
-                          <span className={`rounded-full px-2 py-1 text-xs ${campaign.status === "running" ? "bg-amber-100 text-amber-700" : "bg-zinc-800 text-zinc-400"}`}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-400">
+                            {campaignTypeLabel(campaign.campaign_type || "contacts")}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-1 text-xs ${
+                              campaign.status === "running" || campaign.status === "live"
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-zinc-800 text-zinc-400"
+                            }`}
+                          >
                             {campaign.status}
                           </span>
                         </div>
-                        <p className="mt-2 text-sm text-zinc-400">{campaign.message_text}</p>
+                        </div>
+                        <p className="mt-2 text-sm text-zinc-400">
+                          Template: <span className="font-medium text-zinc-200">{campaign.template_name || "—"}</span>
+                          {campaign.template_language ? ` (${campaign.template_language})` : ""}
+                        </p>
                         <p className="mt-2 text-xs text-zinc-500">Recipients: {campaign.recipients.length}</p>
-                        <button
-                          className="mt-2 rounded-lg border border-zinc-500 px-3 py-1 text-xs hover:bg-zinc-800/50 disabled:cursor-not-allowed disabled:opacity-60"
-                          onClick={() => startCampaign(campaign.id)}
-                          disabled={campaign.status === "running"}
-                        >
-                          {campaign.status === "running" ? "Running" : "Start"}
-                        </button>
+                        {campaign.cost_estimate && (
+                          <p className="mt-1 text-xs text-emerald-300/90">
+                            Approx. Meta cost: {formatMetaInr(campaign.cost_estimate.estimated_total_inr)}
+                            {campaign.campaign_type === "api" ? " (per trigger if 1 recipient)" : ""}
+                            {campaign.cost_estimate.template_category
+                              ? ` · ${campaign.cost_estimate.template_category}`
+                              : ""}
+                          </p>
+                        )}
+                        {campaign.recipients.some((r) => r.last_error) && (
+                          <div className="mt-2 space-y-1 rounded-lg border border-rose-900/50 bg-rose-950/30 p-2">
+                            {campaign.recipients
+                              .filter((r) => r.last_error)
+                              .slice(0, 5)
+                              .map((r) => (
+                                <p key={r.id} className="text-xs text-rose-200">
+                                  {r.state}: {r.last_error}
+                                </p>
+                              ))}
+                          </div>
+                        )}
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {(campaign.campaign_type || "contacts") === "api" ? (
+                            <>
+                              <button
+                                type="button"
+                                className="rounded-lg border border-indigo-500 px-3 py-1 text-xs text-indigo-200 hover:bg-indigo-950/50 disabled:opacity-60"
+                                onClick={() => goLiveApiCampaign(campaign.id)}
+                                disabled={campaign.status === "live"}
+                              >
+                                {campaign.status === "live" ? "Live" : "Go Live"}
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded-lg border border-zinc-500 px-3 py-1 text-xs hover:bg-zinc-800/50"
+                                onClick={() => setSelectedApiCampaignId(campaign.id)}
+                              >
+                                API docs
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              className="rounded-lg border border-zinc-500 px-3 py-1 text-xs hover:bg-zinc-800/50 disabled:cursor-not-allowed disabled:opacity-60"
+                              onClick={() => startCampaign(campaign.id)}
+                              disabled={campaign.status === "running" || campaign.status === "completed"}
+                            >
+                              {campaign.status === "running" ? "Running" : "Start broadcast"}
+                            </button>
+                          )}
+                        </div>
+                        {(selectedApiCampaignId === campaign.id || campaign.status === "live") &&
+                          (campaign.campaign_type || "contacts") === "api" && (
+                            <pre className="mt-2 overflow-x-auto rounded-lg bg-black/40 p-2 text-[10px] text-zinc-300">{`POST ${API_BASE}/integrations/campaigns/${campaign.id}/trigger
+Header: X-Integration-Key: wsk.<key-id>.<secret>
+Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "text": "Rohit" }] }`}</pre>
+                          )}
                       </div>
                     ))}
                     {campaigns.length === 0 && <p className="text-sm text-zinc-500">No campaigns yet</p>}
@@ -3096,8 +3734,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     <code className="rounded bg-zinc-800 px-1">template.components[].parameters[]</code> with{" "}
                     <code className="rounded bg-zinc-800 px-1">parameter_name</code> +{" "}
                     <code className="rounded bg-zinc-800 px-1">text</code> for each variable (see Meta&apos;s named-parameter send
-                    examples). This app&apos;s simple &quot;Send template test&quot; call does not pass those parameters yet—utility
-                    templates without variables, or extending the send API, are needed for tests.
+                    examples). Use the variable fields in Inbox, Contacts, or Campaigns when sending templates with placeholders.
                   </p>
                   <form onSubmit={createTemplateInMeta} className="space-y-2">
                     {!wabaConnections.length && (
@@ -3306,6 +3943,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       >
                         <p className="text-sm font-medium">{item.contact_name || "Unknown contact"}</p>
                         <p className="text-xs text-zinc-500">{item.phone_e164}</p>
+                        {item.messaging_window && (
+                          <span className={`mt-1 inline-block ${windowBadgeClass(item.messaging_window)}`}>
+                            {windowBadgeLabel(item.messaging_window)}
+                          </span>
+                        )}
                       </button>
                     ))}
                     {conversations.length === 0 && <p className="text-sm text-zinc-500">No conversations yet</p>}
@@ -3314,6 +3956,28 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
 
                 <div className={`${CARD_CLASS} space-y-3`}>
                   <h2 className="text-base font-semibold text-zinc-100">Conversation Thread</h2>
+                  {selectedConversation?.messaging_window && (
+                    <div
+                      className={`rounded-xl border px-3 py-2 text-sm ${
+                        selectedConversation.messaging_window.can_send_session
+                          ? "border-emerald-700/60 bg-emerald-950/40 text-emerald-100"
+                          : "border-amber-700/60 bg-amber-950/40 text-amber-100"
+                      }`}
+                    >
+                      <p className="font-medium">
+                        {selectedConversation.messaging_window.can_send_session
+                          ? "24-hour reply window open"
+                          : "Template-only — session reply blocked"}
+                      </p>
+                      <p className="mt-1 text-xs opacity-90">{selectedConversation.messaging_window.session_hint}</p>
+                      {selectedConversation.messaging_window.is_open &&
+                        selectedConversation.messaging_window.seconds_remaining != null && (
+                          <p className="mt-1 text-xs opacity-80">
+                            {formatWindowRemaining(selectedConversation.messaging_window.seconds_remaining)}
+                          </p>
+                        )}
+                    </div>
+                  )}
                   <InlineFeedbackText feedback={inlineFeedback.inboxThread} />
                   <div className="max-h-72 space-y-2 overflow-auto rounded-xl border border-zinc-600 p-3">
                     {conversationMessages.map((msg) => {
@@ -3348,7 +4012,13 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     })}
                     {conversationMessages.length === 0 && <p className="text-sm text-zinc-500">Select a conversation</p>}
                   </div>
-                  <div className="space-y-2 rounded-xl border border-zinc-600/80 bg-zinc-900/40 p-3">
+                  <div
+                    className={`space-y-2 rounded-xl border p-3 ${
+                      selectedConversation?.messaging_window && !selectedConversation.messaging_window.can_send_session
+                        ? "border-amber-500/50 bg-amber-950/25 ring-1 ring-amber-500/30"
+                        : "border-zinc-600/80 bg-zinc-900/40"
+                    }`}
+                  >
                     <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Send template</p>
                     {!selectedConversation ? (
                       <p className="text-sm text-zinc-500">Select a conversation to send an approved template.</p>
@@ -3381,9 +4051,16 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                             </div>
                           );
                         })()}
+                        <TemplateVariableFields
+                          templateKey={inboxTemplateKey}
+                          templateItems={approvedTemplates}
+                          values={inboxTemplateVars}
+                          onChange={(key, value) => setInboxTemplateVars((prev) => ({ ...prev, [key]: value }))}
+                          contactName={selectedConversation.contact_name}
+                        />
                         <p className="text-[11px] text-zinc-500">
-                          Variables use the contact name ({selectedConversation.contact_name || "Customer"}). For outreach
-                          outside the 24-hour window or when a session reply cannot be delivered.
+                          For outreach outside the 24-hour window. Authentication templates need the real OTP/code in each
+                          variable field.
                         </p>
                         <button
                           type="button"
@@ -3403,7 +4080,15 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     )}
                     <InlineFeedbackText feedback={inlineFeedback.inboxTemplate} />
                   </div>
-                  <form onSubmit={sendReply} className="space-y-2">
+                  <form
+                    onSubmit={sendReply}
+                    className={`space-y-2 ${selectedConversation?.messaging_window && !selectedConversation.messaging_window.can_send_session ? "opacity-60" : ""}`}
+                  >
+                    {selectedConversation?.messaging_window && !selectedConversation.messaging_window.can_send_session && (
+                      <p className="text-xs text-amber-200/90">
+                        Session replies are disabled. Use an approved template above to message this contact.
+                      </p>
+                    )}
                     <input
                       ref={replyFileInputRef}
                       type="file"
@@ -3415,7 +4100,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       <button
                         type="button"
                         className={`${BTN_SECONDARY} !min-h-9 py-1.5 text-xs`}
-                        disabled={!selectedConversation || sendingReply}
+                        disabled={
+                          !selectedConversation ||
+                          sendingReply ||
+                          (selectedConversation?.messaging_window != null && !selectedConversation.messaging_window.can_send_session)
+                        }
                         onClick={() => replyFileInputRef.current?.click()}
                       >
                         Attach image or document
@@ -3452,6 +4141,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       placeholder={replyAttachment ? "Optional caption…" : "Type reply…"}
                       value={replyText}
                       onChange={(e) => setReplyText(e.target.value)}
+                      disabled={
+                        selectedConversation?.messaging_window != null && !selectedConversation.messaging_window.can_send_session
+                      }
                     />
                     <button
                       className={BTN_PRIMARY}
@@ -3459,7 +4151,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       disabled={
                         !selectedConversation ||
                         sendingReply ||
-                        (!replyText.trim() && !replyAttachment)
+                        (!replyText.trim() && !replyAttachment) ||
+                        (selectedConversation?.messaging_window != null && !selectedConversation.messaging_window.can_send_session)
                       }
                     >
                       {sendingReply ? (

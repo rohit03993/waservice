@@ -8,6 +8,22 @@ from app.models.campaign_recipient import CampaignRecipient
 from app.services.queue import enqueue_campaign_job
 
 
+def queue_single_campaign_recipient(
+    *,
+    db: Session,
+    campaign: Campaign,
+    recipient: CampaignRecipient,
+    tenant_id: UUID,
+) -> None:
+    recipient.state = "queued"
+    recipient.last_error = None
+    recipient.next_retry_at = None
+    if campaign.campaign_type != "api" and campaign.status not in {"running", "completed"}:
+        campaign.status = "running"
+    db.commit()
+    enqueue_campaign_job(campaign_id=campaign.id, recipient_id=recipient.id, tenant_id=tenant_id)
+
+
 def queue_campaign_recipients(*, db: Session, campaign: Campaign, tenant_id: UUID) -> int:
     if campaign.status == "completed":
         return 0

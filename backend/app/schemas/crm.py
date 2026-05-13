@@ -3,6 +3,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.campaign import MessagingWindowResponse
+
 
 class TagCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=50)
@@ -44,3 +46,4 @@ class ContactResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     merged_with_existing: bool = False
+    messaging_window: MessagingWindowResponse
