@@ -45,6 +45,7 @@ type TemplateItem = {
   category: string | null;
   status: string | null;
   preview_text?: string | null;
+  body_variables?: string[];
 };
 
 type ConversationItem = {
@@ -237,20 +238,24 @@ function Spinner({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
+function isMetaAccessTokenError(text: string): boolean {
+  if (/session has expired/i.test(text) || /error validating access token/i.test(text)) return true;
+  if (/['"]code['"]\s*:\s*190\b/.test(text)) return true;
+  if (/access token is required/i.test(text) && /['"]code['"]\s*:\s*104\b/.test(text)) return true;
+  return false;
+}
+
 function formatApiErrorBody(text: string, status: number): string {
   const trimmed = (text || "").trim();
   if (!trimmed) return "Something went wrong. Please try again.";
-  if (trimmed.includes("Session has expired") || trimmed.includes('"code": 190') || trimmed.includes('"code":190') || trimmed.includes("OAuthException")) {
-    return "Meta access token expired or invalid. Open Meta Developer Console → WhatsApp → API Setup, copy a fresh token, and save it in WhatsApp Settings.";
-  }
   if (status === 429) return "Too many requests. Please wait a minute and try again.";
   if (status === 401) return "Session expired. Please log in again.";
   try {
     const parsed = JSON.parse(trimmed) as { detail?: unknown };
     if (typeof parsed.detail === "string") {
       const d = parsed.detail;
-      if (d.includes("Session has expired") || d.includes("OAuthException")) {
-        return "Meta access token expired or invalid. Paste a fresh token in WhatsApp Settings and save.";
+      if (isMetaAccessTokenError(d)) {
+        return "Meta access token expired or invalid. Use a System User token in WhatsApp Settings (not API Setup).";
       }
       if (d.length > 400) return d.slice(0, 400) + "…";
       return d;
@@ -262,11 +267,40 @@ function formatApiErrorBody(text: string, status: number): string {
   } catch {
     /* not JSON */
   }
+  if (isMetaAccessTokenError(trimmed)) {
+    return "Meta access token expired or invalid. Use a System User token in WhatsApp Settings (not API Setup).";
+  }
   if (trimmed.length > 400) return trimmed.slice(0, 400) + "…";
   return trimmed;
 }
 
-const INBOX_MEDIA_TYPES = new Set(["image", "document", "sticker", "video", "audio"]);
+function buildTemplateSendPayload(
+  templateKey: string,
+  templateItems: TemplateItem[],
+  recipientName: string | null
+): { template_name: string; language_code: string; body_parameters?: Array<{ type: "text"; text: string; parameter_name?: string }> } | null {
+  if (!templateKey) return null;
+  const sep = templateKey.indexOf("__");
+  const template_name = sep >= 0 ? templateKey.slice(0, sep) : templateKey;
+  const language_code = sep >= 0 ? templateKey.slice(sep + 2) : "en_US";
+  const selected = templateItems.find((it) => `${it.name}__${it.language}` === templateKey);
+  const bodyVars = selected?.body_variables ?? [];
+  const fillValue = (recipientName || "Customer").trim() || "Customer";
+  const body_parameters =
+    bodyVars.length > 0
+      ? bodyVars.map((key) => {
+          const isPositional = /^\d+$/.test(key);
+          return isPositional
+            ? { type: "text" as const, text: fillValue }
+            : { type: "text" as const, text: fillValue, parameter_name: key };
+        })
+      : undefined;
+  return { template_name, language_code, body_parameters };
+}
+
+function isApprovedTemplate(item: TemplateItem): boolean {
+  return (item.status || "").toUpperCase() === "APPROVED";
+}
 
 function inboxMediaPlaceholderOnly(messageType: string, display: string): boolean {
   if (messageType === "image" && display === "[Image]") return true;
@@ -575,6 +609,7 @@ type FeedbackSlot =
   | "waConnectionForm"
   | "waTemplateTest"
   | "inboxReply"
+  | "inboxTemplate"
   | "inboxList"
   | "inboxThread"
   | "metaPricing";
@@ -670,6 +705,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }>
   >([]);
   const wabaConnections = useMemo(() => waConnections.filter((c) => Boolean(c.waba_id)), [waConnections]);
+  const approvedTemplates = useMemo(() => templateItems.filter(isApprovedTemplate), [templateItems]);
   const [waAccessTokenPreview, setWaAccessTokenPreview] = useState("");
   const [waAppSecretConfigured, setWaAppSecretConfigured] = useState(false);
   const [waVerifyTokenConfigured, setWaVerifyTokenConfigured] = useState(false);
@@ -696,6 +732,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [inlineFeedback, setInlineFeedback] = useState<Partial<Record<FeedbackSlot, InlineFeedback>>>({});
   const feedbackTimersRef = useRef<Partial<Record<FeedbackSlot, number>>>({});
   const [sendingQuickTemplate, setSendingQuickTemplate] = useState(false);
+  const [inboxTemplateKey, setInboxTemplateKey] = useState("");
+  const [sendingInboxTemplate, setSendingInboxTemplate] = useState(false);
   const [sendingTemplateTest, setSendingTemplateTest] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
   const [replyAttachment, setReplyAttachment] = useState<File | null>(null);
@@ -1395,9 +1433,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       flash("contactQuickSend", "Choose a template first.", "error");
       return;
     }
-    const sep = quickTemplateKey.indexOf("__");
-    const name = sep >= 0 ? quickTemplateKey.slice(0, sep) : quickTemplateKey;
-    const lang = sep >= 0 ? quickTemplateKey.slice(sep + 2) : "en_US";
+    const payload = buildTemplateSendPayload(quickTemplateKey, templateItems, quickSendContact.name);
+    if (!payload) return;
     setSendingQuickTemplate(true);
     try {
       await apiRequest<{ message_id?: string }>("/whatsapp/send-template-test", {
@@ -1406,8 +1443,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
         body: JSON.stringify({
           connection_id: waConnectionId || null,
           to_phone_e164: quickSendContact.phone_e164,
-          template_name: name,
-          language_code: lang
+          ...payload
         })
       });
       flash("contactQuickSend", "Template sent.", "success");
@@ -1420,12 +1456,40 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
   }
 
+  async function sendInboxTemplate() {
+    if (!selectedConversation || !inboxTemplateKey) {
+      flash("inboxTemplate", "Select a conversation and template first.", "error");
+      return;
+    }
+    const payload = buildTemplateSendPayload(inboxTemplateKey, templateItems, selectedConversation.contact_name);
+    if (!payload) return;
+    setSendingInboxTemplate(true);
+    try {
+      await apiRequest<{ message_id?: string }>("/whatsapp/send-template-test", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          connection_id: waConnectionId || null,
+          to_phone_e164: selectedConversation.phone_e164,
+          ...payload
+        })
+      });
+      await loadConversationMessages(selectedConversation);
+      flash("inboxTemplate", "Template sent.", "success");
+    } catch (error) {
+      flash("inboxTemplate", (error as Error).message, "error");
+    } finally {
+      setSendingInboxTemplate(false);
+    }
+  }
+
   useEffect(() => {
     if (!token) return;
     if (activeTab === "contacts") {
       loadTags();
       loadContacts();
       loadTemplates();
+      loadWhatsAppConnection();
       return;
     }
     if (activeTab === "campaigns") {
@@ -1441,6 +1505,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
     if (activeTab === "inbox") {
       loadConversations();
+      loadTemplates();
+      loadWhatsAppConnection();
       return;
     }
     if (activeTab === "analytics") {
@@ -1480,6 +1546,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, activeTab, selectedConversation?.conversation_id]);
+
+  useEffect(() => {
+    setInboxTemplateKey("");
+  }, [selectedConversation?.conversation_id]);
 
   async function sendTemplateTest(event: FormEvent) {
     event.preventDefault();
@@ -3275,6 +3345,61 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       );
                     })}
                     {conversationMessages.length === 0 && <p className="text-sm text-zinc-500">Select a conversation</p>}
+                  </div>
+                  <div className="space-y-2 rounded-xl border border-zinc-600/80 bg-zinc-900/40 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Send template</p>
+                    {!selectedConversation ? (
+                      <p className="text-sm text-zinc-500">Select a conversation to send an approved template.</p>
+                    ) : approvedTemplates.length === 0 ? (
+                      <p className="text-sm text-amber-200/90">
+                        No approved templates loaded. Sync templates from Settings or Templates, then return here.
+                      </p>
+                    ) : (
+                      <>
+                        <select
+                          className={INPUT_CLASS}
+                          value={inboxTemplateKey}
+                          onChange={(e) => setInboxTemplateKey(e.target.value)}
+                          disabled={sendingInboxTemplate}
+                        >
+                          <option value="">Select approved template</option>
+                          {approvedTemplates.map((item) => (
+                            <option key={`${item.name}:${item.language}`} value={`${item.name}__${item.language}`}>
+                              {item.name} ({item.language})
+                            </option>
+                          ))}
+                        </select>
+                        {(() => {
+                          const sel = approvedTemplates.find((it) => `${it.name}__${it.language}` === inboxTemplateKey);
+                          if (!sel?.preview_text?.trim()) return null;
+                          return (
+                            <div className="rounded-lg border border-zinc-600 bg-zinc-800/50 p-3">
+                              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Preview</p>
+                              <p className="whitespace-pre-wrap text-sm text-zinc-200">{sel.preview_text.trim()}</p>
+                            </div>
+                          );
+                        })()}
+                        <p className="text-[11px] text-zinc-500">
+                          Variables use the contact name ({selectedConversation.contact_name || "Customer"}). For outreach
+                          outside the 24-hour window or when a session reply cannot be delivered.
+                        </p>
+                        <button
+                          type="button"
+                          className={BTN_SUCCESS}
+                          disabled={!inboxTemplateKey || sendingInboxTemplate}
+                          onClick={() => void sendInboxTemplate()}
+                        >
+                          {sendingInboxTemplate ? (
+                            <>
+                              <Spinner /> Sending…
+                            </>
+                          ) : (
+                            "Send template"
+                          )}
+                        </button>
+                      </>
+                    )}
+                    <InlineFeedbackText feedback={inlineFeedback.inboxTemplate} />
                   </div>
                   <form onSubmit={sendReply} className="space-y-2">
                     <input

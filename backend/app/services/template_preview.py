@@ -105,3 +105,37 @@ def build_template_preview_from_stored(components_wrapped: dict | None) -> str |
     if not chunks:
         return None
     return "\n".join(chunks).strip()
+
+
+def body_template_variables(components_wrapped: dict | None) -> list[str]:
+    """
+    Ordered body placeholder keys for Cloud API sends: positional '1','2',… or named keys.
+    Empty when the template body has no variables.
+    """
+    if not components_wrapped or not isinstance(components_wrapped, dict):
+        return []
+    raw = components_wrapped.get("components")
+    if not isinstance(raw, list):
+        return []
+    for comp in raw:
+        if not isinstance(comp, dict) or str(comp.get("type") or "").upper() != "BODY":
+            continue
+        text = comp.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return []
+        order: list[str] = []
+        seen: set[str] = set()
+        for m in re.finditer(r"\{\{\s*(\d+)\s*\}\}", text):
+            key = m.group(1)
+            if key not in seen:
+                seen.add(key)
+                order.append(key)
+        if order:
+            return order
+        for m in re.finditer(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}", text):
+            key = m.group(1)
+            if key not in seen:
+                seen.add(key)
+                order.append(key)
+        return order
+    return []

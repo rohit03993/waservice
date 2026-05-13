@@ -74,6 +74,7 @@ class TemplateItemResponse(BaseModel):
     category: str | None
     status: str | None
     preview_text: str | None = None
+    body_variables: list[str] = Field(default_factory=list)
 
 
 class BodyVariableExample(BaseModel):

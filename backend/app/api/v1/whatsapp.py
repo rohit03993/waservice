@@ -35,7 +35,7 @@ from app.schemas.whatsapp import (
 from app.services.audit import log_admin_action
 from app.services.meta_client import MetaClient
 from app.services.outbound_whatsapp import send_whatsapp_template_message
-from app.services.template_preview import build_template_preview_from_stored
+from app.services.template_preview import body_template_variables, build_template_preview_from_stored
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 webhook_router = APIRouter(tags=["webhook"])
@@ -336,6 +336,31 @@ def _plain_verify_token(value: str | None) -> str:
     return (plain or "").strip()
 
 
+def _format_meta_send_error(exc: RuntimeError) -> str:
+    """Extract Meta Graph error message; flag true token expiry (code 190) separately."""
+    raw = str(exc)
+    message: str | None = None
+    for pattern in (r"'message'\s*:\s*'((?:\\'|[^'])*)'", r'"message"\s*:\s*"((?:\\"|[^"])*)"'):
+        match = re.search(pattern, raw)
+        if match:
+            message = match.group(1).replace("\\'", "'").replace('\\"', '"')
+            break
+    token_expired = bool(
+        re.search(r"['\"]code['\"]\s*:\s*190\b", raw)
+        or (message and re.search(r"session has expired|error validating access token", message, re.I))
+    )
+    if token_expired:
+        return (
+            "Meta access token expired or invalid. In Business Settings → System users, generate a new "
+            "long-lived token and save it in WhatsApp Settings."
+        )
+    if message:
+        return message
+    if len(raw) > 400:
+        return raw[:400] + "…"
+    return raw
+
+
 def _resolve_connection(
     *,
     db: Session,
@@ -622,7 +647,7 @@ async def send_template_test(
             template_components=comps,
         )
     except RuntimeError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Meta send failed: {error}") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_format_meta_send_error(error)) from error
 
     log_admin_action(
         db=db,
@@ -684,6 +709,7 @@ def list_templates(
             category=item.category,
             status=item.status,
             preview_text=build_template_preview_from_stored(item.components),
+            body_variables=body_template_variables(item.components),
         )
         for item in templates
     ]
@@ -1042,7 +1068,7 @@ async def reply_media(
                 filename=fn,
             )
     except RuntimeError as error:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Meta send failed: {error}") from error
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=_format_meta_send_error(error)) from error
 
     message_id = None
     if isinstance(data.get("messages"), list) and data["messages"]:
