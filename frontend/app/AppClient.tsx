@@ -302,6 +302,8 @@ function isApprovedTemplate(item: TemplateItem): boolean {
   return (item.status || "").toUpperCase() === "APPROVED";
 }
 
+const INBOX_MEDIA_TYPES = new Set(["image", "document", "sticker", "video", "audio"]);
+
 function inboxMediaPlaceholderOnly(messageType: string, display: string): boolean {
   if (messageType === "image" && display === "[Image]") return true;
   if (messageType === "sticker" && display === "[Sticker]") return true;
