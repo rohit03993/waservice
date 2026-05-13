@@ -103,6 +103,22 @@ const CARD_CLASS =
 /** Light inputs for auth cards (dark text on white) */
 const INPUT_AUTH_LIGHT =
   "w-full rounded-xl border border-zinc-300 bg-white px-3 py-2.5 text-sm text-zinc-900 placeholder:text-zinc-400 outline-none transition focus:border-crm-accent-dim focus:ring-2 focus:ring-yellow-200";
+
+/** If there is no +, a 10-digit Indian mobile (6–9…) or 12-digit 91… is treated as +91 (matches backend). */
+function normalizePhoneInputIndiaDefault(raw: string): string {
+  const t = raw.trim().replace(/\s/g, "");
+  if (!t) return "";
+  if (t.startsWith("+")) return t;
+  let digits = t.replace(/\D/g, "");
+  if (digits.startsWith("0") && digits.length === 11) digits = digits.slice(1);
+  if (/^[6-9]\d{9}$/.test(digits)) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith("91") && /^[6-9]\d{9}$/.test(digits.slice(2))) return `+${digits}`;
+  if (digits) return `+${digits}`;
+  return t;
+}
+
+const E164_RE = /^\+[1-9]\d{6,14}$/;
+
 /** Compact table / toolbar actions */
 const BTN_ROW =
   "inline-flex min-h-[2rem] min-w-[4.5rem] items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crm-accent/50 focus-visible:ring-offset-2 focus-visible:ring-offset-crm-void disabled:pointer-events-none disabled:opacity-55";
@@ -542,6 +558,8 @@ type InlineFeedback = { text: string; variant: InlineFeedbackKind };
 type FeedbackSlot =
   | "authLogin"
   | "authRegister"
+  | "authPhoneLogin"
+  | "phoneBindSettings"
   | "sectionRefresh"
   | "tagCreate"
   | "tagRefresh"
@@ -598,6 +616,15 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [token, setToken] = useState(() => (typeof window !== "undefined" ? window.localStorage.getItem("auth_token") || "" : ""));
   const [email, setEmail] = useState(() => (typeof window !== "undefined" ? window.localStorage.getItem("auth_email") || "" : ""));
   const [password, setPassword] = useState("");
+  const [registerPhone, setRegisterPhone] = useState("");
+  const [profilePhoneE164, setProfilePhoneE164] = useState<string | null | undefined>(undefined);
+  const [bindPhone, setBindPhone] = useState("");
+  const [bindOtp, setBindOtp] = useState("");
+  const [bindOtpIssuedForE164, setBindOtpIssuedForE164] = useState<string | null>(null);
+  const [loginSubtab, setLoginSubtab] = useState<"email" | "phone">("email");
+  const [loginPhone, setLoginPhone] = useState("");
+  const [loginOtp, setLoginOtp] = useState("");
+  const [otpIssuedForE164, setOtpIssuedForE164] = useState<string | null>(null);
   const [authPanel, setAuthPanel] = useState<"login" | "register">("login");
   const [registerCustomizeWorkspace, setRegisterCustomizeWorkspace] = useState(false);
   const [tenantName, setTenantName] = useState("");
@@ -758,6 +785,24 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
   }, [email]);
 
+  useEffect(() => {
+    if (!otpIssuedForE164) return;
+    const e164 = normalizePhoneInputIndiaDefault(loginPhone);
+    if (e164 !== otpIssuedForE164) {
+      setOtpIssuedForE164(null);
+      setLoginOtp("");
+    }
+  }, [loginPhone, otpIssuedForE164]);
+
+  useEffect(() => {
+    if (!bindOtpIssuedForE164) return;
+    const e164 = normalizePhoneInputIndiaDefault(bindPhone);
+    if (e164 !== bindOtpIssuedForE164) {
+      setBindOtpIssuedForE164(null);
+      setBindOtp("");
+    }
+  }, [bindPhone, bindOtpIssuedForE164]);
+
   /** Auto workspace name + slug from email unless user opened "Customize". */
   useEffect(() => {
     if (authPanel !== "register" || registerCustomizeWorkspace) return;
@@ -788,6 +833,35 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }),
     [token]
   );
+
+  useEffect(() => {
+    if (!token || activeTab !== "settings") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await apiRequest<{ user: { phone_e164: string | null } }>("/auth/me", {
+          headers: authHeaders
+        });
+        if (!cancelled) setProfilePhoneE164(data.user.phone_e164 ?? null);
+      } catch {
+        if (!cancelled) setProfilePhoneE164(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, activeTab, authHeaders]);
+
+  const phoneLoginE164Normalized = useMemo(() => {
+    const e164 = normalizePhoneInputIndiaDefault(loginPhone);
+    return E164_RE.test(e164) ? e164 : "";
+  }, [loginPhone]);
+
+  const bindPhoneE164Normalized = useMemo(() => {
+    const e164 = normalizePhoneInputIndiaDefault(bindPhone);
+    return E164_RE.test(e164) ? e164 : "";
+  }, [bindPhone]);
+
   const campaignStats = useMemo(() => {
     const totals = { running: 0, scheduled: 0, draft: 0, completed: 0, recipients: 0, sent: 0, failed: 0, queued: 0 };
     for (const campaign of campaigns) {
@@ -855,15 +929,25 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       return;
     }
     try {
+      const registerBody: Record<string, string> = {
+        email: emailTrim,
+        password,
+        tenant_name: name || derivedName,
+        tenant_slug: slug
+      };
+      const phoneTrim = registerPhone.trim();
+      if (phoneTrim) {
+        const normalized = normalizePhoneInputIndiaDefault(phoneTrim);
+        if (!E164_RE.test(normalized)) {
+          flash("authRegister", "Enter a valid mobile number (e.g. 9876543210 or +919876543210).", "error");
+          return;
+        }
+        registerBody.phone_e164 = normalized;
+      }
       const data = await apiRequest<{ access_token: string }>("/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: emailTrim,
-          password,
-          tenant_name: name || derivedName,
-          tenant_slug: slug
-        })
+        body: JSON.stringify(registerBody)
       });
       setToken(data.access_token);
       router.push("/dashboard/contacts");
@@ -891,6 +975,102 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       router.push("/dashboard/contacts");
     } catch (error) {
       flash("authLogin", (error as Error).message, "error");
+    }
+  }
+
+  async function handlePhoneSendOtp(event: FormEvent) {
+    event.preventDefault();
+    const e164 = normalizePhoneInputIndiaDefault(loginPhone);
+    if (!E164_RE.test(e164)) {
+      flash("authPhoneLogin", "Enter a valid mobile number (e.g. 9876543210 or +919876543210).", "error");
+      return;
+    }
+    try {
+      await apiRequest<{ detail: string }>("/auth/phone/request-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone_e164: e164 })
+      });
+      setLoginPhone(e164);
+      setOtpIssuedForE164(e164);
+      flash("authPhoneLogin", "If this number is registered, you will receive a 6-digit code by SMS.", "success");
+    } catch (error) {
+      flash("authPhoneLogin", (error as Error).message, "error");
+    }
+  }
+
+  async function handlePhoneVerifyOtp(event: FormEvent) {
+    event.preventDefault();
+    const e164 = normalizePhoneInputIndiaDefault(loginPhone);
+    if (!E164_RE.test(e164)) {
+      flash("authPhoneLogin", "Enter a valid mobile number.", "error");
+      return;
+    }
+    const digits = loginOtp.replace(/\D/g, "").slice(0, 6);
+    if (digits.length !== 6) {
+      flash("authPhoneLogin", "Enter the 6-digit code from your SMS.", "error");
+      return;
+    }
+    try {
+      const data = await apiRequest<{ access_token: string }>("/auth/phone/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone_e164: e164, code: digits })
+      });
+      setToken(data.access_token);
+      router.push("/dashboard/contacts");
+    } catch (error) {
+      flash("authPhoneLogin", (error as Error).message, "error");
+    }
+  }
+
+  async function handleBindPhoneSendOtp(event: FormEvent) {
+    event.preventDefault();
+    if (!token) return;
+    const e164 = normalizePhoneInputIndiaDefault(bindPhone);
+    if (!E164_RE.test(e164)) {
+      flash("phoneBindSettings", "Enter a valid mobile number (e.g. 9876543210 or +919876543210).", "error");
+      return;
+    }
+    try {
+      await apiRequest<{ detail: string }>("/auth/phone/bind/request-otp", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ phone_e164: e164 })
+      });
+      setBindPhone(e164);
+      setBindOtpIssuedForE164(e164);
+      flash("phoneBindSettings", "Code sent. Enter it below, then save.", "success");
+    } catch (error) {
+      flash("phoneBindSettings", (error as Error).message, "error");
+    }
+  }
+
+  async function handleBindPhoneVerifyOtp(event: FormEvent) {
+    event.preventDefault();
+    if (!token) return;
+    const e164 = normalizePhoneInputIndiaDefault(bindPhone);
+    if (!E164_RE.test(e164)) {
+      flash("phoneBindSettings", "Enter a valid mobile number.", "error");
+      return;
+    }
+    const digits = bindOtp.replace(/\D/g, "").slice(0, 6);
+    if (digits.length !== 6) {
+      flash("phoneBindSettings", "Enter the 6-digit code from your SMS.", "error");
+      return;
+    }
+    try {
+      await apiRequest<{ phone_e164: string }>("/auth/phone/bind/verify-otp", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ phone_e164: e164, code: digits })
+      });
+      setProfilePhoneE164(e164);
+      setBindOtp("");
+      setBindOtpIssuedForE164(null);
+      flash("phoneBindSettings", "Phone saved. You can sign in with SMS using this number.", "success");
+    } catch (error) {
+      flash("phoneBindSettings", (error as Error).message, "error");
     }
   }
 
@@ -1847,43 +2027,121 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
             </div>
 
             {authPanel === "login" ? (
-              <form
-                onSubmit={handleLogin}
-                className="space-y-4 rounded-2xl border border-crm-border bg-white p-6 shadow-xl shadow-black/50"
-              >
+              <div className="space-y-4 rounded-2xl border border-crm-border bg-white p-6 shadow-xl shadow-black/50">
                 <div>
                   <h2 className="text-xl font-bold text-zinc-900">Welcome back</h2>
-                  <p className="mt-1 text-sm text-zinc-600">Use the email and password for your workspace.</p>
+                  <p className="mt-1 text-sm text-zinc-600">Sign in with email and password, or with a code sent to your phone.</p>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Email</label>
-                  <input
-                    className={INPUT_AUTH_LIGHT}
-                    placeholder="you@company.com"
-                    autoComplete="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                  />
+                <div className="flex rounded-xl border border-zinc-200 bg-zinc-50 p-1">
+                  <button
+                    type="button"
+                    className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                      loginSubtab === "email" ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-800"
+                    }`}
+                    onClick={() => {
+                      setLoginSubtab("email");
+                      setOtpIssuedForE164(null);
+                      setLoginOtp("");
+                    }}
+                  >
+                    Email & password
+                  </button>
+                  <button
+                    type="button"
+                    className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                      loginSubtab === "phone" ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-800"
+                    }`}
+                    onClick={() => setLoginSubtab("phone")}
+                  >
+                    Phone & SMS code
+                  </button>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Password</label>
-                  <input
-                    className={INPUT_AUTH_LIGHT}
-                    type="password"
-                    placeholder="Your password"
-                    autoComplete="current-password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                </div>
-                <button
-                  className="w-full rounded-xl bg-black py-3 text-sm font-bold text-crm-accent transition hover:bg-zinc-900"
-                  type="submit"
-                >
-                  Sign in
-                </button>
-                <InlineFeedbackText surface="light" feedback={inlineFeedback.authLogin} />
-              </form>
+
+                {loginSubtab === "email" ? (
+                  <form onSubmit={handleLogin} className="space-y-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Email</label>
+                      <input
+                        className={INPUT_AUTH_LIGHT}
+                        placeholder="you@company.com"
+                        autoComplete="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Password</label>
+                      <input
+                        className={INPUT_AUTH_LIGHT}
+                        type="password"
+                        placeholder="Your password"
+                        autoComplete="current-password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                      />
+                    </div>
+                    <button
+                      className="w-full rounded-xl bg-black py-3 text-sm font-bold text-crm-accent transition hover:bg-zinc-900"
+                      type="submit"
+                    >
+                      Sign in
+                    </button>
+                    <InlineFeedbackText surface="light" feedback={inlineFeedback.authLogin} />
+                  </form>
+                ) : (
+                  <div className="space-y-4">
+                    <form onSubmit={handlePhoneSendOtp} className="space-y-4">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Phone (E.164)</label>
+                        <input
+                          className={INPUT_AUTH_LIGHT}
+                          placeholder="+919876543210 or 9876543210"
+                          autoComplete="tel"
+                          inputMode="tel"
+                          value={loginPhone}
+                          onChange={(e) => setLoginPhone(e.target.value)}
+                        />
+                        <p className="text-[11px] text-zinc-500">
+                          Indian mobiles: you can enter 10 digits without + and we add +91. Otherwise use full E.164.
+                        </p>
+                      </div>
+                      <button
+                        className="w-full rounded-xl border border-zinc-300 bg-white py-3 text-sm font-bold text-zinc-900 transition hover:bg-zinc-50"
+                        type="submit"
+                      >
+                        Send 6-digit code
+                      </button>
+                    </form>
+                    <form onSubmit={handlePhoneVerifyOtp} className="space-y-4 border-t border-zinc-100 pt-4">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Code from SMS</label>
+                        <input
+                          className={INPUT_AUTH_LIGHT}
+                          placeholder="000000"
+                          autoComplete="one-time-code"
+                          inputMode="numeric"
+                          maxLength={8}
+                          value={loginOtp}
+                          onChange={(e) => setLoginOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        />
+                      </div>
+                      <button
+                        className="w-full rounded-xl bg-black py-3 text-sm font-bold text-crm-accent transition hover:bg-zinc-900 disabled:opacity-50"
+                        type="submit"
+                        disabled={
+                          !otpIssuedForE164 ||
+                          !phoneLoginE164Normalized ||
+                          phoneLoginE164Normalized !== otpIssuedForE164
+                        }
+                        title={otpIssuedForE164 ? undefined : "Send a code first"}
+                      >
+                        Verify and sign in
+                      </button>
+                      <InlineFeedbackText surface="light" feedback={inlineFeedback.authPhoneLogin} />
+                    </form>
+                  </div>
+                )}
+              </div>
             ) : (
               <form
                 onSubmit={handleRegister}
@@ -1916,6 +2174,20 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     onChange={(e) => setPassword(e.target.value)}
                   />
                   <p className="text-[11px] text-zinc-500">Use a strong password; it protects your WhatsApp data.</p>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-crm-accent">Mobile (optional)</label>
+                  <input
+                    className={INPUT_CLASS}
+                    placeholder="+919876543210 or 9876543210 — optional, for SMS sign-in"
+                    autoComplete="tel"
+                    inputMode="tel"
+                    value={registerPhone}
+                    onChange={(e) => setRegisterPhone(e.target.value)}
+                  />
+                  <p className="text-[11px] text-zinc-500">
+                    E.164 or 10-digit Indian mobile; we add +91 when you omit the country code.
+                  </p>
                 </div>
                 {email.includes("@") && (
                   <div className="rounded-xl border border-zinc-600 bg-black/35 px-3 py-3 text-xs leading-relaxed text-zinc-400">
@@ -2478,12 +2750,65 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       Templates synced ({templateItems.length} in library)
                     </li>
                     <li className="flex items-center gap-2">
-                      <span className={connectionHealth?.overall === "healthy" ? "text-emerald-600" : "text-zinc-400"}>
-                        {connectionHealth?.overall === "healthy" ? "✓" : "○"}
+                      <span className={typeof profilePhoneE164 === "string" && profilePhoneE164 ? "text-emerald-600" : "text-zinc-400"}>
+                        {typeof profilePhoneE164 === "string" && profilePhoneE164 ? "✓" : "○"}
                       </span>
-                      API health check passed (token + webhook readiness)
+                      SMS sign-in number on your account (add below)
                     </li>
                   </ul>
+                </section>
+
+                <section className={`${CARD_CLASS} space-y-3`}>
+                  <h2 className="text-base font-semibold text-zinc-100">SMS sign-in (Sent.dm)</h2>
+                  <p className="text-xs text-zinc-500">
+                    For accounts created before phone login existed: add your mobile here so “Phone & SMS code” works on the login page. Uses the same Sent.dm template as sign-in OTP.
+                  </p>
+                  <p className="text-sm text-zinc-300">
+                    <span className="font-semibold text-crm-accent">Saved on your user: </span>
+                    {profilePhoneE164 === undefined ? "Loading…" : profilePhoneE164 || "Not set"}
+                  </p>
+                  <form onSubmit={handleBindPhoneSendOtp} className="space-y-2">
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-zinc-400">Mobile (E.164 or 10-digit IN)</label>
+                      <input
+                        className={INPUT_CLASS}
+                        placeholder="+919876543210 or 9876543210"
+                        autoComplete="tel"
+                        inputMode="tel"
+                        value={bindPhone}
+                        onChange={(e) => setBindPhone(e.target.value)}
+                      />
+                    </div>
+                    <button className={BTN_SECONDARY} type="submit">
+                      Send verification code
+                    </button>
+                  </form>
+                  <form onSubmit={handleBindPhoneVerifyOtp} className="space-y-2 border-t border-zinc-600/60 pt-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-zinc-400">Code from SMS</label>
+                      <input
+                        className={INPUT_CLASS}
+                        placeholder="000000"
+                        autoComplete="one-time-code"
+                        inputMode="numeric"
+                        maxLength={8}
+                        value={bindOtp}
+                        onChange={(e) => setBindOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      />
+                    </div>
+                    <button
+                      className={BTN_PRIMARY}
+                      type="submit"
+                      disabled={
+                        !bindOtpIssuedForE164 ||
+                        !bindPhoneE164Normalized ||
+                        bindPhoneE164Normalized !== bindOtpIssuedForE164
+                      }
+                    >
+                      Verify and save number
+                    </button>
+                    <InlineFeedbackText feedback={inlineFeedback.phoneBindSettings} />
+                  </form>
                 </section>
 
                 <section className="grid gap-4 lg:grid-cols-2">

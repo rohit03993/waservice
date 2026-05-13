@@ -13,6 +13,8 @@ class User(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    # E.164 (+country…) for optional SMS OTP login; unique when set (Postgres allows multiple NULLs).
+    phone_e164: Mapped[str | None] = mapped_column(String(20), unique=True, index=True, nullable=True)
     full_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

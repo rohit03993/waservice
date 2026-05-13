@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     # Set true only on a trusted internal network if you need Swagger in production.
     expose_api_docs: bool = False
 
+    # Sent.dm — SMS OTP login (https://docs.sent.dm/start/guides/sending-messages)
+    sent_dm_api_key: str = ""
+    sent_dm_template_id: str = ""
+    # Template variable name for the 6-digit code (must match your approved Sent template).
+    sent_dm_otp_parameter_name: str = "otp"
+    phone_login_otp_ttl_seconds: int = 600
+
     @property
     def cors_origins_list(self) -> list[str]:
         value = (self.cors_origins or "").strip()
