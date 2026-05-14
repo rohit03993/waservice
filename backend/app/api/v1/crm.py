@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload
 
@@ -17,11 +17,13 @@ from app.schemas.campaign import MessagingWindowResponse
 from app.schemas.crm import (
     ContactCreateRequest,
     ContactFilterRequest,
+    ContactImportCsvResponse,
     ContactResponse,
     ContactUpdateRequest,
     TagCreateRequest,
     TagResponse,
 )
+from app.services.contact_csv_import import decode_contact_csv, import_contacts_from_csv
 
 router = APIRouter(prefix="/crm", tags=["crm"])
 
@@ -248,3 +250,34 @@ def filter_contacts(
 
     contacts = query.order_by(Contact.created_at.desc()).all()
     return [_contact_to_schema(contact) for contact in contacts]
+
+
+@router.post("/contacts/import-csv", response_model=ContactImportCsvResponse)
+async def import_contacts_csv(
+    file: UploadFile = File(...),
+    tag_ids: list[UUID] = Form(default=[]),
+    membership: Membership = Depends(get_admin_or_agent_membership),
+    db: Session = Depends(get_db),
+) -> ContactImportCsvResponse:
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please upload a valid .csv file")
+
+    content = await file.read()
+    try:
+        decoded = decode_contact_csv(content)
+        result = import_contacts_from_csv(
+            db=db,
+            tenant_id=membership.tenant_id,
+            decoded=decoded,
+            tag_ids=tag_ids,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
+    db.commit()
+    return ContactImportCsvResponse(
+        created_contacts=result.created_contacts,
+        updated_contacts=result.updated_contacts,
+        tagged_contacts=result.tagged_contacts,
+        skipped_rows=result.skipped_rows,
+    )

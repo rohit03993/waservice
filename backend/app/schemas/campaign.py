@@ -23,6 +23,10 @@ class CampaignCreateRequest(BaseModel):
         description="contacts = pick CRM contacts; csv = upload CSV recipients; api = external systems trigger sends",
     )
     contact_ids: list[UUID] = Field(default_factory=list)
+    tag_ids: list[UUID] = Field(
+        default_factory=list,
+        description="For contact broadcasts: include every CRM contact that has any of these tags.",
+    )
     template_variable_defaults: dict[str, str] | None = Field(
         default=None,
         description="Default values for template body variables (broadcast); name-like keys still per-contact unless set.",
@@ -37,10 +41,10 @@ class CampaignCreateRequest(BaseModel):
             raise ValueError("campaign_type must be contacts, csv, or api")
         if not self.template_name.strip():
             raise ValueError("template_name is required for WhatsApp broadcast campaigns")
-        if campaign_type == "contacts" and not self.contact_ids:
-            raise ValueError("Select at least one contact for a contact broadcast campaign")
-        if campaign_type in {"csv", "api"} and self.contact_ids:
-            raise ValueError("contact_ids are not used for csv or api campaigns; import CSV or use the API trigger")
+        if campaign_type == "contacts" and not self.contact_ids and not self.tag_ids:
+            raise ValueError("Select at least one contact or tag for a contact broadcast campaign")
+        if campaign_type in {"csv", "api"} and (self.contact_ids or self.tag_ids):
+            raise ValueError("contact_ids and tag_ids are not used for csv or api campaigns; import CSV or use the API trigger")
         self.campaign_type = campaign_type
         return self
 

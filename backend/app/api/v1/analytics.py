@@ -13,7 +13,9 @@ from app.core.secrets import decrypt_secret
 from app.db.session import get_db
 from app.models.membership import Membership
 from app.schemas.meta_analytics import MetaPricingAnalyticsResponse, MetaPricingDataPoint
+from app.schemas.tag_analytics import TagPerformanceResponse
 from app.services.meta_client import MetaClient
+from app.services.tag_analytics import build_tag_performance
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -144,3 +146,17 @@ async def get_meta_pricing_analytics(
         summary_total_volume=total_volume,
         data_points=points,
     )
+
+
+@router.get("/tag-performance", response_model=TagPerformanceResponse)
+def get_tag_performance(
+    start_ts: int | None = Query(default=None, description="Optional Unix timestamp (seconds), range start"),
+    end_ts: int | None = Query(default=None, description="Optional Unix timestamp (seconds), range end"),
+    membership: Membership = Depends(get_admin_membership),
+    db: Session = Depends(get_db),
+) -> TagPerformanceResponse:
+    if start_ts is not None and end_ts is not None and start_ts >= end_ts:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_ts must be before end_ts")
+
+    payload = build_tag_performance(db, tenant_id=membership.tenant_id, start_ts=start_ts, end_ts=end_ts)
+    return TagPerformanceResponse(**payload)

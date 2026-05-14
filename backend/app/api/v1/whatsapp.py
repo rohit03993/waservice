@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_admin_membership, get_admin_or_agent_membership
 from app.core.phone import normalize_phone_e164
@@ -15,6 +15,7 @@ from app.core.rate_limit import check_rate_limit
 from app.core.secrets import decrypt_secret, encrypt_secret
 from app.db.session import get_db
 from app.models.contact import Contact
+from app.models.contact_tag import ContactTag
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.message_template import MessageTemplate
@@ -660,6 +661,7 @@ def list_conversations(
     conversations = (
         db.query(Conversation, Contact)
         .join(Contact, Contact.id == Conversation.contact_id)
+        .options(joinedload(Contact.tags).joinedload(ContactTag.tag))
         .filter(Conversation.tenant_id == membership.tenant_id)
         .order_by(Conversation.updated_at.desc())
         .all()
@@ -671,6 +673,7 @@ def list_conversations(
             "contact_name": contact.name,
             "phone_e164": contact.phone_e164,
             "updated_at": conversation.updated_at.isoformat(),
+            "tags": [{"id": str(row.tag.id), "name": row.tag.name} for row in contact.tags],
             "messaging_window": MessagingWindowResponse(**build_messaging_window(contact.last_inbound_at)).model_dump(
                 mode="json"
             ),

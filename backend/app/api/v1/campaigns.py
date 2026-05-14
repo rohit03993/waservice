@@ -15,8 +15,10 @@ from app.db.session import get_db
 from app.models.campaign import Campaign
 from app.models.campaign_recipient import CampaignRecipient
 from app.models.contact import Contact
+from app.models.contact_tag import ContactTag
 from app.models.membership import Membership
 from app.models.message_template import MessageTemplate
+from app.models.tag import Tag
 from app.schemas.campaign import (
     CampaignCostEstimateResponse,
     CampaignCreateRequest,
@@ -188,18 +190,53 @@ def create_campaign(
     db.add(campaign)
     db.flush()
 
-    if payload.contact_ids:
+    contact_ids_to_use: list[UUID] = list(payload.contact_ids)
+    if payload.tag_ids:
+        tags = db.query(Tag).filter(
+            and_(Tag.tenant_id == membership.tenant_id, Tag.id.in_(payload.tag_ids))
+        ).all()
+        tag_map = {tag.id: tag for tag in tags}
+        missing_tags = [tag_id for tag_id in payload.tag_ids if tag_id not in tag_map]
+        if missing_tags:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more tags were not found")
+
+        tagged_contact_ids = (
+            db.query(Contact.id)
+            .join(ContactTag, ContactTag.contact_id == Contact.id)
+            .filter(
+                Contact.tenant_id == membership.tenant_id,
+                ContactTag.tag_id.in_(payload.tag_ids),
+            )
+            .distinct()
+            .all()
+        )
+        contact_ids_to_use.extend(row.id for row in tagged_contact_ids)
+
+    seen_contact_ids: set[UUID] = set()
+    unique_contact_ids: list[UUID] = []
+    for contact_id in contact_ids_to_use:
+        if contact_id not in seen_contact_ids:
+            seen_contact_ids.add(contact_id)
+            unique_contact_ids.append(contact_id)
+
+    if payload.campaign_type == "contacts" and not unique_contact_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No contacts matched the selected tags or contact list",
+        )
+
+    if unique_contact_ids:
         contacts = (
             db.query(Contact)
-            .filter(and_(Contact.tenant_id == membership.tenant_id, Contact.id.in_(payload.contact_ids)))
+            .filter(and_(Contact.tenant_id == membership.tenant_id, Contact.id.in_(unique_contact_ids)))
             .all()
         )
         contact_map = {contact.id: contact for contact in contacts}
-        missing = [contact_id for contact_id in payload.contact_ids if contact_id not in contact_map]
+        missing = [contact_id for contact_id in unique_contact_ids if contact_id not in contact_map]
         if missing:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more contacts were not found")
 
-        for contact_id in payload.contact_ids:
+        for contact_id in unique_contact_ids:
             contact = contact_map[contact_id]
             overrides = merge_template_defaults_for_contact(
                 body_var_keys,

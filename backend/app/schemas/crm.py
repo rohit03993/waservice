@@ -37,6 +37,13 @@ class ContactFilterRequest(BaseModel):
     custom_attribute_value: str | None = None
 
 
+class ContactImportCsvResponse(BaseModel):
+    created_contacts: int
+    updated_contacts: int
+    tagged_contacts: int
+    skipped_rows: int
+
+
 class ContactResponse(BaseModel):
     id: UUID
     phone_e164: str

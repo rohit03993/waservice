@@ -84,6 +84,7 @@ type ConversationItem = {
   contact_name: string | null;
   phone_e164: string;
   updated_at: string;
+  tags?: Tag[];
   messaging_window?: MessagingWindow;
 };
 
@@ -121,6 +122,29 @@ type MetaPricingResponse = {
   summary_total_cost: number;
   summary_total_volume: number;
   data_points: MetaPricingPoint[];
+};
+
+type TagPerformanceRow = {
+  tag_id: string;
+  tag_name: string;
+  contact_count: number;
+  messages_sent: number;
+  messages_failed: number;
+  messages_pending: number;
+  estimated_cost_inr: number;
+  currency: string;
+};
+
+type TagPerformanceResponse = {
+  fetched_at: string;
+  start_ts: number | null;
+  end_ts: number | null;
+  summary_messages_sent: number;
+  summary_messages_failed: number;
+  summary_estimated_cost_inr: number;
+  currency: string;
+  disclaimer: string;
+  tags: TagPerformanceRow[];
 };
 
 type DashboardSection = "contacts" | "campaigns" | "templates" | "inbox" | "settings" | "analytics" | "automations" | "integrations";
@@ -835,6 +859,7 @@ type FeedbackSlot =
   | "tagCreate"
   | "tagRefresh"
   | "contactCreate"
+  | "contactImport"
   | "contactList"
   | "contactQuickSend"
   | "contactEdit"
@@ -849,7 +874,8 @@ type FeedbackSlot =
   | "inboxTemplate"
   | "inboxList"
   | "inboxThread"
-  | "metaPricing";
+  | "metaPricing"
+  | "tagPerf";
 
 function InlineFeedbackText({
   feedback,
@@ -878,6 +904,114 @@ function InlineFeedbackText({
     </p>
   );
 }
+
+function toggleTagSelection(selectedIds: string[], tagId: string, allowMultiple: boolean): string[] {
+  if (!allowMultiple) {
+    return selectedIds.includes(tagId) ? [] : [tagId];
+  }
+  return selectedIds.includes(tagId) ? selectedIds.filter((id) => id !== tagId) : [...selectedIds, tagId];
+}
+
+function TagChipPicker({
+  tags,
+  selectedIds,
+  onChange,
+  counts,
+  allowMultiple = true,
+  emptyLabel = "No tags yet. Create one below.",
+  showAllOption = false,
+  allSelected = false,
+  onSelectAll,
+}: {
+  tags: Tag[];
+  selectedIds: string[];
+  onChange: (ids: string[]) => void;
+  counts?: Record<string, number>;
+  allowMultiple?: boolean;
+  emptyLabel?: string;
+  showAllOption?: boolean;
+  allSelected?: boolean;
+  onSelectAll?: () => void;
+}) {
+  if (tags.length === 0 && !showAllOption) {
+    return <p className="text-sm text-zinc-500">{emptyLabel}</p>;
+  }
+  return (
+    <div className="flex flex-wrap gap-2">
+      {showAllOption && onSelectAll && (
+        <button
+          type="button"
+          onClick={onSelectAll}
+          className={`rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+            allSelected
+              ? "border-crm-accent bg-crm-accent text-black shadow-sm shadow-crm-accent/30"
+              : "border-zinc-600 bg-zinc-900/80 text-zinc-300 hover:border-zinc-400 hover:text-white"
+          }`}
+        >
+          All contacts
+          {counts && counts.__all != null ? <span className="ml-1 opacity-80">({counts.__all})</span> : null}
+        </button>
+      )}
+      {tags.map((tag) => {
+        const selected = selectedIds.includes(tag.id);
+        const count = counts?.[tag.id];
+        return (
+          <button
+            key={tag.id}
+            type="button"
+            onClick={() => onChange(toggleTagSelection(selectedIds, tag.id, allowMultiple))}
+            className={`rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+              selected
+                ? "border-crm-accent bg-crm-accent text-black shadow-sm shadow-crm-accent/30"
+                : "border-zinc-600 bg-zinc-900/80 text-zinc-300 hover:border-zinc-400 hover:text-white"
+            }`}
+          >
+            {tag.name}
+            {count != null ? <span className={`ml-1 ${selected ? "text-black/70" : "text-zinc-500"}`}>({count})</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ContactPreviewPanel({
+  title,
+  contacts,
+  loading,
+  emptyHint,
+}: {
+  title: string;
+  contacts: Contact[];
+  loading?: boolean;
+  emptyHint: string;
+}) {
+  return (
+    <div className="rounded-xl border border-zinc-600 bg-black/30">
+      <div className="flex items-center justify-between border-b border-zinc-700 px-3 py-2.5">
+        <p className="text-sm font-medium text-zinc-100">{title}</p>
+        <span className="rounded-full bg-crm-accent/20 px-2.5 py-0.5 text-xs font-semibold text-crm-accent">
+          {loading ? "…" : contacts.length} total
+        </span>
+      </div>
+      <div className="max-h-52 overflow-y-auto divide-y divide-zinc-800">
+        {loading ? (
+          <p className="px-3 py-6 text-center text-sm text-zinc-500">Loading contacts…</p>
+        ) : contacts.length === 0 ? (
+          <p className="px-3 py-6 text-center text-sm text-zinc-500">{emptyHint}</p>
+        ) : (
+          contacts.map((contact) => (
+            <div key={contact.id} className="px-3 py-2.5 text-sm">
+              <p className="font-medium text-zinc-100">{contact.name || "Unnamed"}</p>
+              <p className="text-xs text-zinc-500">{contact.phone_e164}</p>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function AppClient({ mode = "dashboard", initialSection = "contacts" }: { mode?: PageMode; initialSection?: string }) {
   const router = useRouter();
   const normalizedInitialSection: DashboardSection = (
@@ -907,6 +1041,13 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [contactName, setContactName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [contactImportCsvFile, setContactImportCsvFile] = useState<File | null>(null);
+  const [contactImportTagIds, setContactImportTagIds] = useState<string[]>([]);
+  const [contactImportRowCount, setContactImportRowCount] = useState(0);
+  const [importingContacts, setImportingContacts] = useState(false);
+  const [contactDirectory, setContactDirectory] = useState<Contact[]>([]);
+  const [activeListTagId, setActiveListTagId] = useState<string | null>(null);
+  const [listFilterLoading, setListFilterLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [attributesInput, setAttributesInput] = useState("");
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
@@ -918,6 +1059,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [campaignName, setCampaignName] = useState("");
   const [campaignLaunchType, setCampaignLaunchType] = useState<CampaignLaunchType>("contacts");
   const [campaignContactIds, setCampaignContactIds] = useState<string[]>([]);
+  const [campaignTargetMode, setCampaignTargetMode] = useState<"manual" | "tags">("tags");
+  const [campaignTagIds, setCampaignTagIds] = useState<string[]>([]);
+  const [campaignTagRecipientCount, setCampaignTagRecipientCount] = useState(0);
+  const [campaignTagPreviewContacts, setCampaignTagPreviewContacts] = useState<Contact[]>([]);
+  const [campaignTagPreviewLoading, setCampaignTagPreviewLoading] = useState(false);
   const [campaignCsvFile, setCampaignCsvFile] = useState<File | null>(null);
   const [csvRowCount, setCsvRowCount] = useState(0);
   const [csvDraftCampaignId, setCsvDraftCampaignId] = useState<string | null>(null);
@@ -956,10 +1102,13 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const approvedTemplates = useMemo(() => templateItems.filter(isApprovedTemplate), [templateItems]);
 
   const launchRecipientCount = useMemo(() => {
-    if (campaignLaunchType === "contacts") return campaignContactIds.length;
+    if (campaignLaunchType === "contacts") {
+      if (campaignTargetMode === "tags") return campaignTagRecipientCount;
+      return campaignContactIds.length;
+    }
     if (campaignLaunchType === "csv") return csvRowCount;
     return 1;
-  }, [campaignLaunchType, campaignContactIds.length, csvRowCount]);
+  }, [campaignLaunchType, campaignTargetMode, campaignContactIds.length, campaignTagRecipientCount, csvRowCount]);
 
   const launchCostEstimate = useMemo(() => {
     const sel = approvedTemplates.find((t) => t.name === waTemplateName && t.language === waTemplateLanguage);
@@ -968,6 +1117,22 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   }, [approvedTemplates, waTemplateName, waTemplateLanguage, launchRecipientCount]);
 
   const allCampaignContactsSelected = contacts.length > 0 && campaignContactIds.length === contacts.length;
+
+  const tagContactCounts = useMemo(() => {
+    const counts: Record<string, number> = { __all: contactDirectory.length };
+    for (const tag of tags) counts[tag.id] = 0;
+    for (const contact of contactDirectory) {
+      for (const tag of contact.tags) {
+        counts[tag.id] = (counts[tag.id] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [tags, contactDirectory]);
+
+  const activeListTagName = useMemo(
+    () => (activeListTagId ? tags.find((tag) => tag.id === activeListTagId)?.name ?? null : null),
+    [activeListTagId, tags]
+  );
 
   function toggleCampaignContact(contactId: string) {
     setCampaignContactIds((prev) =>
@@ -978,6 +1143,20 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   function toggleAllCampaignContacts() {
     setCampaignContactIds(allCampaignContactsSelected ? [] : contacts.map((c) => c.id));
   }
+
+  useEffect(() => {
+    if (!contactImportCsvFile) {
+      setContactImportRowCount(0);
+      return;
+    }
+    let cancelled = false;
+    void countCsvDataRows(contactImportCsvFile).then((n) => {
+      if (!cancelled) setContactImportRowCount(n);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [contactImportCsvFile]);
 
   useEffect(() => {
     if (!campaignCsvFile) {
@@ -996,7 +1175,30 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [selectedConversation, setSelectedConversation] = useState<ConversationItem | null>(null);
   const [conversationMessages, setConversationMessages] = useState<ConversationMessage[]>([]);
   const [inboxLastSyncedAt, setInboxLastSyncedAt] = useState<string>("");
+  const [inboxFilterTagId, setInboxFilterTagId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState("");
+
+  const inboxTagCounts = useMemo(() => {
+    const counts: Record<string, number> = { __all: conversations.length };
+    for (const tag of tags) counts[tag.id] = 0;
+    for (const conversation of conversations) {
+      for (const tag of conversation.tags ?? []) {
+        counts[tag.id] = (counts[tag.id] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [conversations, tags]);
+
+  const filteredInboxConversations = useMemo(() => {
+    if (!inboxFilterTagId) return conversations;
+    return conversations.filter((conversation) => (conversation.tags ?? []).some((tag) => tag.id === inboxFilterTagId));
+  }, [conversations, inboxFilterTagId]);
+
+  const inboxFilterTagName = useMemo(
+    () => (inboxFilterTagId ? tags.find((tag) => tag.id === inboxFilterTagId)?.name ?? null : null),
+    [inboxFilterTagId, tags]
+  );
+
   const [hydrated, setHydrated] = useState(false);
   const [connectionHealth, setConnectionHealth] = useState<{
     overall: string;
@@ -1057,6 +1259,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [metaPricingGranularity, setMetaPricingGranularity] = useState<"DAILY" | "HALF_HOUR" | "MONTHLY">("DAILY");
   const [metaPricingDays, setMetaPricingDays] = useState<7 | 30>(30);
   const [metaPricingCountryFilter, setMetaPricingCountryFilter] = useState("");
+  const [tagPerfLoading, setTagPerfLoading] = useState(false);
+  const [tagPerfDays, setTagPerfDays] = useState<0 | 7 | 30>(30);
+  const [tagPerfData, setTagPerfData] = useState<TagPerformanceResponse | null>(null);
 
   const sectionMeta: Record<string, { title: string; subtitle: string }> = {
     contacts: { title: "Contacts CRM", subtitle: "Manage contacts, tags, attributes, and segmentation." },
@@ -1153,6 +1358,69 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }),
     [token]
   );
+
+  useEffect(() => {
+    if (campaignLaunchType !== "contacts" || campaignTargetMode !== "tags" || campaignTagIds.length === 0 || !token) {
+      setCampaignTagRecipientCount(0);
+      setCampaignTagPreviewContacts([]);
+      return;
+    }
+    let cancelled = false;
+    setCampaignTagPreviewLoading(true);
+    void apiRequest<Contact[]>("/crm/contacts/filter", {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ tag_ids: campaignTagIds })
+    })
+      .then((data) => {
+        if (!cancelled) {
+          setCampaignTagRecipientCount(data.length);
+          setCampaignTagPreviewContacts(data);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCampaignTagRecipientCount(0);
+          setCampaignTagPreviewContacts([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCampaignTagPreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignLaunchType, campaignTargetMode, campaignTagIds, token, authHeaders]);
+
+  useEffect(() => {
+    if (!token || activeTab !== "contacts") return;
+    let cancelled = false;
+    setListFilterLoading(true);
+    void (async () => {
+      try {
+        if (!activeListTagId && !searchQuery.trim()) {
+          if (!cancelled) setContacts(contactDirectory);
+          return;
+        }
+        const data = await apiRequest<Contact[]>("/crm/contacts/filter", {
+          method: "POST",
+          headers: authHeaders,
+          body: JSON.stringify({
+            query: searchQuery.trim() || null,
+            tag_ids: activeListTagId ? [activeListTagId] : []
+          })
+        });
+        if (!cancelled) setContacts(data);
+      } catch {
+        if (!cancelled) setContacts([]);
+      } finally {
+        if (!cancelled) setListFilterLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeListTagId, searchQuery, contactDirectory, token, activeTab, authHeaders]);
 
   useEffect(() => {
     if (!token || activeTab !== "settings") return;
@@ -1394,13 +1662,13 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
   }
 
-  async function loadTags(resultSlot?: FeedbackSlot) {
+  async function loadTags(resultSlot?: FeedbackSlot, quiet?: boolean) {
     try {
       const data = await apiRequest<Tag[]>("/crm/tags", { headers: authHeaders });
       setTags(data);
-      if (resultSlot) flash(resultSlot, "Tags updated.", "success");
+      if (resultSlot && !quiet) flash(resultSlot, "Tags updated.", "success");
     } catch (error) {
-      if (resultSlot) flash(resultSlot, (error as Error).message, "error");
+      if (resultSlot && !quiet) flash(resultSlot, (error as Error).message, "error");
     }
   }
 
@@ -1424,11 +1692,18 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   async function loadContacts(resultSlot?: FeedbackSlot, quiet?: boolean) {
     try {
       const data = await apiRequest<Contact[]>("/crm/contacts", { headers: authHeaders });
-      setContacts(data);
+      setContactDirectory(data);
+      if (!activeListTagId && !searchQuery.trim()) {
+        setContacts(data);
+      }
       if (resultSlot && !quiet) flash(resultSlot, "Contacts list updated.", "success");
     } catch (error) {
       if (resultSlot && !quiet) flash(resultSlot, (error as Error).message, "error");
     }
+  }
+
+  async function refreshContactList() {
+    await loadContacts(undefined, true);
   }
 
   async function createContact(event: FormEvent) {
@@ -1472,21 +1747,44 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
   }
 
-  async function filterContacts(event: FormEvent) {
+  async function importContactsCsv(event: FormEvent) {
     event.preventDefault();
+    if (!contactImportCsvFile) {
+      flash("contactImport", "Choose a CSV file to import.", "error");
+      return;
+    }
+    setImportingContacts(true);
     try {
-      const data = await apiRequest<Contact[]>("/crm/contacts/filter", {
+      const fd = new FormData();
+      fd.append("file", contactImportCsvFile);
+      for (const tagId of contactImportTagIds) {
+        fd.append("tag_ids", tagId);
+      }
+      const res = await fetch(`${API_BASE}/crm/contacts/import-csv`, {
         method: "POST",
-        headers: authHeaders,
-        body: JSON.stringify({
-          query: searchQuery || null,
-          tag_ids: []
-        })
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd
       });
-      setContacts(data);
-      flash("contactList", "Filter applied.", "success");
+      const text = await res.text();
+      if (!res.ok) throw new Error(formatApiErrorBody(text, res.status));
+      const imported = JSON.parse(text) as {
+        created_contacts: number;
+        updated_contacts: number;
+        tagged_contacts: number;
+        skipped_rows: number;
+      };
+      flash(
+        "contactImport",
+        `Imported ${imported.created_contacts} new, updated ${imported.updated_contacts}, tagged ${imported.tagged_contacts} (${imported.skipped_rows} rows skipped).`,
+        "success"
+      );
+      setContactImportCsvFile(null);
+      setContactImportTagIds([]);
+      await loadContacts();
     } catch (error) {
-      flash("contactList", (error as Error).message, "error");
+      flash("contactImport", (error as Error).message, "error");
+    } finally {
+      setImportingContacts(false);
     }
   }
 
@@ -1511,9 +1809,15 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       flash("campaignCreate", "Choose an approved template from the list.", "error");
       return;
     }
-    if (campaignLaunchType === "contacts" && campaignContactIds.length === 0) {
-      flash("campaignCreate", "Select at least one contact for a contact broadcast.", "error");
-      return;
+    if (campaignLaunchType === "contacts") {
+      if (campaignTargetMode === "tags" && campaignTagIds.length === 0) {
+        flash("campaignCreate", "Select at least one tag to target.", "error");
+        return;
+      }
+      if (campaignTargetMode === "manual" && campaignContactIds.length === 0) {
+        flash("campaignCreate", "Select at least one contact for a contact broadcast.", "error");
+        return;
+      }
     }
     if (campaignLaunchType === "csv" && !campaignCsvFile && !csvDraftCampaignId) {
       flash("campaignCreate", "Choose a CSV file to import recipients.", "error");
@@ -1528,7 +1832,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
           template_name: waTemplateName,
           template_language: waTemplateLanguage,
           campaign_type: campaignLaunchType,
-          contact_ids: campaignLaunchType === "contacts" ? campaignContactIds : [],
+          contact_ids: campaignLaunchType === "contacts" && campaignTargetMode === "manual" ? campaignContactIds : [],
+          tag_ids: campaignLaunchType === "contacts" && campaignTargetMode === "tags" ? campaignTagIds : [],
           template_variable_defaults: Object.fromEntries(
             Object.entries(campaignTemplateVars).filter(([, v]) => v.trim())
           )
@@ -1560,6 +1865,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       }
       setCampaignName("");
       setCampaignContactIds([]);
+      setCampaignTagIds([]);
       await loadCampaigns();
     } catch (error) {
       flash("campaignCreate", (error as Error).message, "error");
@@ -1862,6 +2168,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       return;
     }
     if (activeTab === "campaigns") {
+      loadTags();
       loadCampaigns();
       loadContacts();
       loadTemplates();
@@ -1873,12 +2180,14 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       return;
     }
     if (activeTab === "inbox") {
+      loadTags();
       loadConversations();
       loadTemplates();
       loadWhatsAppConnection();
       return;
     }
     if (activeTab === "analytics") {
+      loadTags();
       loadCampaigns();
       loadContacts();
       loadTemplates(undefined, true);
@@ -1890,6 +2199,12 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, activeTab]);
+
+  useEffect(() => {
+    if (!token || activeTab !== "analytics") return;
+    void loadTagPerformance(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, activeTab, tagPerfDays]);
 
   useEffect(() => {
     if (!token || mode !== "dashboard") return;
@@ -2100,6 +2415,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     setStatsSnapshotRefreshing(true);
     try {
       const results = await Promise.allSettled([
+        loadTags(undefined, true),
         loadContacts(undefined, true),
         loadCampaigns(undefined, true),
         loadTemplates(undefined, true),
@@ -2185,6 +2501,28 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       flash("metaPricing", (error as Error).message, "error");
     } finally {
       setMetaPricingLoading(false);
+    }
+  }
+
+  async function loadTagPerformance(quiet?: boolean) {
+    if (!token) return;
+    setTagPerfLoading(true);
+    try {
+      const q = new URLSearchParams();
+      if (tagPerfDays > 0) {
+        const endTs = Math.floor(Date.now() / 1000);
+        const startTs = endTs - tagPerfDays * 24 * 3600;
+        q.set("start_ts", String(startTs));
+        q.set("end_ts", String(endTs));
+      }
+      const path = q.toString() ? `/analytics/tag-performance?${q}` : "/analytics/tag-performance";
+      const data = await apiRequest<TagPerformanceResponse>(path, { headers: authHeaders });
+      setTagPerfData(data);
+      if (!quiet) flash("tagPerf", "Tag performance updated.", "success");
+    } catch (error) {
+      if (!quiet) flash("tagPerf", (error as Error).message, "error");
+    } finally {
+      setTagPerfLoading(false);
     }
   }
 
@@ -2864,56 +3202,50 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
             </section>
             {activeTab === "contacts" && (
               <>
+                <section className={`${CARD_CLASS} space-y-4`}>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-semibold text-zinc-100">Browse by tag</h2>
+                      <p className="text-sm text-zinc-400">Tap a tag to filter the list. Numbers in brackets are contact counts.</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50"
+                      onClick={() => void refreshContactList()}
+                    >
+                      Refresh contacts
+                    </button>
+                  </div>
+                  <form onSubmit={createTag} className="flex flex-wrap gap-2">
+                    <input className={`${INPUT_CLASS} max-w-xs`} placeholder="New tag (e.g. Class 6)" value={tagName} onChange={(e) => setTagName(e.target.value)} />
+                    <button className="rounded-xl bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700" type="submit">
+                      Add tag
+                    </button>
+                    <InlineFeedbackText feedback={inlineFeedback.tagCreate} />
+                  </form>
+                  <TagChipPicker
+                    tags={tags}
+                    selectedIds={activeListTagId ? [activeListTagId] : []}
+                    onChange={(ids) => setActiveListTagId(ids[0] ?? null)}
+                    counts={tagContactCounts}
+                    allowMultiple={false}
+                    showAllOption
+                    allSelected={!activeListTagId}
+                    onSelectAll={() => setActiveListTagId(null)}
+                    emptyLabel="No tags yet — create Class 6, Class 5 A, etc. above."
+                  />
+                </section>
                 <section className="grid gap-4 lg:grid-cols-2">
                   <div className={`${CARD_CLASS} space-y-3`}>
-                    <h2 className="text-base font-semibold text-zinc-100">Tags</h2>
-                    <form onSubmit={createTag} className="space-y-2">
-                      <div className="flex gap-2">
-                        <input className={INPUT_CLASS} placeholder="Tag name" value={tagName} onChange={(e) => setTagName(e.target.value)} />
-                        <button className="rounded-xl bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700" type="submit">
-                          Add
-                        </button>
-                      </div>
-                      <InlineFeedbackText feedback={inlineFeedback.tagCreate} />
-                    </form>
-                    <button className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={() => loadTags("tagRefresh")}>
-                      Refresh Tags
-                    </button>
-                    <InlineFeedbackText feedback={inlineFeedback.tagRefresh} />
-                    <div className="flex flex-wrap gap-2">
-                      {tags.length === 0 ? (
-                        <p className="text-sm text-zinc-500">No tags yet</p>
-                      ) : (
-                        tags.map((tag) => (
-                          <span key={tag.id} className="rounded-full bg-zinc-800 px-3 py-1 text-xs text-zinc-300">
-                            {tag.name}
-                          </span>
-                        ))
-                      )}
-                    </div>
-                  </div>
-
-                  <div className={`${CARD_CLASS} space-y-3`}>
-                    <h2 className="text-base font-semibold text-zinc-100">Create Contact</h2>
+                    <h2 className="text-base font-semibold text-zinc-100">Add one contact</h2>
                     <form onSubmit={createContact} className="space-y-2">
                       <input className={INPUT_CLASS} placeholder="Name (optional)" value={contactName} onChange={(e) => setContactName(e.target.value)} />
                       <input className={INPUT_CLASS} placeholder="9999999999 (auto +91)" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} />
                       <input className={INPUT_CLASS} placeholder="Attributes (city:Mumbai,source:ads)" value={attributesInput} onChange={(e) => setAttributesInput(e.target.value)} />
-                      <select
-                        multiple
-                        className={`${INPUT_CLASS} h-28`}
-                        value={selectedTagIds}
-                        onChange={(e) => {
-                          const values = Array.from(e.target.selectedOptions).map((opt) => opt.value);
-                          setSelectedTagIds(values);
-                        }}
-                      >
-                        {tags.map((tag) => (
-                          <option key={tag.id} value={tag.id}>
-                            {tag.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div>
+                        <p className="mb-2 text-xs font-medium text-zinc-400">Assign tags (tap to select)</p>
+                        <TagChipPicker tags={tags} selectedIds={selectedTagIds} onChange={setSelectedTagIds} counts={tagContactCounts} />
+                      </div>
                       <button className={BTN_PRIMARY_BLUE} type="submit" disabled={creatingContact}>
                         {creatingContact ? (
                           <>
@@ -2929,18 +3261,68 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                 </section>
 
                 <section className={`${CARD_CLASS} space-y-3`}>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button className="rounded-xl border border-zinc-500 px-3 py-2 text-sm hover:bg-zinc-800/50" type="button" onClick={() => loadContacts("contactList")}>
-                      Load Contacts
+                  <h2 className="text-base font-semibold text-zinc-100">Bulk import (CSV)</h2>
+                  <p className="text-xs text-zinc-500">
+                    Upload a list and apply one or more tags to every imported row — e.g. Class 6, Class 5 A.
+                  </p>
+                  <form onSubmit={importContactsCsv} className="space-y-2">
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      className={INPUT_CLASS}
+                      onChange={(e) => setContactImportCsvFile(e.target.files?.[0] ?? null)}
+                    />
+                    {contactImportCsvFile && (
+                      <p className="text-xs text-zinc-400">
+                        File: <span className="text-zinc-200">{contactImportCsvFile.name}</span>
+                        {contactImportRowCount > 0 ? ` · ${contactImportRowCount} rows` : " · counting rows…"}
+                      </p>
+                    )}
+                    <div>
+                      <p className="mb-2 text-xs font-medium text-zinc-400">Tag for this import (tap to select)</p>
+                      <TagChipPicker tags={tags} selectedIds={contactImportTagIds} onChange={setContactImportTagIds} counts={tagContactCounts} />
+                    </div>
+                    <div className="rounded-lg border border-zinc-600 bg-zinc-900/60 p-3 text-xs text-zinc-400">
+                      <p className="font-medium text-zinc-300">Example CSV</p>
+                      <pre className="mt-1 overflow-x-auto rounded bg-black/50 p-2 font-mono text-[11px] text-emerald-200/90">{`phone_e164,name,roll_no
+919876543210,Rahul,601
+918109462946,Priya,602`}</pre>
+                      <p className="mt-2">
+                        Phone column: <code className="text-zinc-300">phone_e164</code>, <code className="text-zinc-300">phone</code>, or{" "}
+                        <code className="text-zinc-300">mobile</code>. Extra columns are saved as contact attributes.
+                      </p>
+                    </div>
+                    <button className={BTN_PRIMARY_BLUE} type="submit" disabled={importingContacts}>
+                      {importingContacts ? (
+                        <>
+                          <Spinner /> Importing…
+                        </>
+                      ) : (
+                        "Import contacts"
+                      )}
                     </button>
-                    <form onSubmit={filterContacts} className="flex flex-wrap gap-2">
-                      <input className={INPUT_CLASS} placeholder="Search name/phone" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
-                      <button className="rounded-xl bg-zinc-800 px-3 py-2 text-sm text-white hover:bg-black" type="submit">
-                        Filter
-                      </button>
-                    </form>
-                    <InlineFeedbackText feedback={inlineFeedback.contactList} />
+                    <InlineFeedbackText feedback={inlineFeedback.contactImport} />
+                  </form>
+                </section>
+
+                <section className={`${CARD_CLASS} space-y-3`}>
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-crm-accent/25 bg-crm-accent/10 px-4 py-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-crm-accent">Showing</p>
+                      <p className="text-lg font-semibold text-zinc-100">{activeListTagName ?? "All contacts"}</p>
+                    </div>
+                    <p className="text-2xl font-bold tabular-nums text-crm-accent">
+                      {listFilterLoading ? "…" : contacts.length}
+                      <span className="ml-2 text-sm font-normal text-zinc-400">contacts</span>
+                    </p>
                   </div>
+                  <input
+                    className={INPUT_CLASS}
+                    placeholder="Search name or phone in this view…"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                  <InlineFeedbackText feedback={inlineFeedback.contactList} />
 
                   <div className="overflow-x-auto rounded-xl border border-zinc-600">
                     <table className="min-w-full text-left text-sm">
@@ -2955,7 +3337,14 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                         </tr>
                       </thead>
                       <tbody>
-                        {contacts.map((contact) => (
+                        {listFilterLoading ? (
+                          <tr>
+                            <td className="px-3 py-8 text-center text-zinc-500" colSpan={6}>
+                              Loading contacts…
+                            </td>
+                          </tr>
+                        ) : (
+                          contacts.map((contact) => (
                           <tr key={contact.id} className="border-t border-zinc-700">
                             <td className="px-3 py-2">{contact.name || "-"}</td>
                             <td className="px-3 py-2">{contact.phone_e164}</td>
@@ -3000,11 +3389,14 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                               </div>
                             </td>
                           </tr>
-                        ))}
-                        {contacts.length === 0 && (
+                          ))
+                        )}
+                        {!listFilterLoading && contacts.length === 0 && (
                           <tr>
-                            <td className="px-3 py-4 text-center text-zinc-500" colSpan={6}>
-                              No contacts found
+                            <td className="px-3 py-8 text-center text-zinc-500" colSpan={6}>
+                              {activeListTagName
+                                ? `No contacts in “${activeListTagName}” yet. Import a CSV or add students with this tag.`
+                                : "No contacts yet. Add one above or bulk import a CSV."}
                             </td>
                           </tr>
                         )}
@@ -3095,18 +3487,10 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       <input className={INPUT_CLASS} placeholder="Name" value={editName} onChange={(e) => setEditName(e.target.value)} />
                       <input className={INPUT_CLASS} placeholder="9999999999 (auto +91)" value={editPhone} onChange={(e) => setEditPhone(e.target.value)} />
                       <input className={`${INPUT_CLASS} md:col-span-2`} placeholder="Attributes (city:Mumbai,source:ads)" value={editAttributesInput} onChange={(e) => setEditAttributesInput(e.target.value)} />
-                      <select
-                        multiple
-                        className={`${INPUT_CLASS} h-28 md:col-span-2`}
-                        value={editTagIds}
-                        onChange={(e) => setEditTagIds(Array.from(e.target.selectedOptions).map((opt) => opt.value))}
-                      >
-                        {tags.map((tag) => (
-                          <option key={tag.id} value={tag.id}>
-                            {tag.name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="md:col-span-2">
+                        <p className="mb-2 text-xs font-medium text-zinc-400">Tags (tap to select)</p>
+                        <TagChipPicker tags={tags} selectedIds={editTagIds} onChange={setEditTagIds} counts={tagContactCounts} />
+                      </div>
                       <div className="flex gap-2 md:col-span-2">
                         <button className="rounded-xl bg-crm-accent px-4 py-2 text-sm font-bold text-black hover:bg-crm-accent-hover" type="submit">
                           Save
@@ -3212,6 +3596,55 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                     )}
                     {campaignLaunchType === "contacts" && (
                       <>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {(
+                            [
+                              ["tags", "By tags", "Everyone with selected tag(s)"],
+                              ["manual", "Pick contacts", "Choose individuals from the list"],
+                            ] as const
+                          ).map(([mode, title, hint]) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              className={`rounded-xl border p-3 text-left text-sm transition ${
+                                campaignTargetMode === mode
+                                  ? "border-crm-accent bg-crm-accent/15 text-zinc-100"
+                                  : "border-zinc-600 text-zinc-400 hover:border-zinc-500"
+                              }`}
+                              onClick={() => setCampaignTargetMode(mode)}
+                            >
+                              <p className="font-semibold">{title}</p>
+                              <p className="mt-1 text-[11px] opacity-80">{hint}</p>
+                            </button>
+                          ))}
+                        </div>
+                        {campaignTargetMode === "tags" ? (
+                          <>
+                            <p className="text-xs font-medium text-zinc-400">Select audience tag(s)</p>
+                            <TagChipPicker
+                              tags={tags}
+                              selectedIds={campaignTagIds}
+                              onChange={setCampaignTagIds}
+                              counts={tagContactCounts}
+                              emptyLabel="Create tags on the Contacts tab first (e.g. Class 6)."
+                            />
+                            <ContactPreviewPanel
+                              title={
+                                campaignTagIds.length === 0
+                                  ? "Recipients preview"
+                                  : `Recipients · ${campaignTagIds.map((id) => tags.find((t) => t.id === id)?.name).filter(Boolean).join(", ")}`
+                              }
+                              contacts={campaignTagPreviewContacts}
+                              loading={campaignTagPreviewLoading}
+                              emptyHint={
+                                campaignTagIds.length === 0
+                                  ? "Select one or more tags to see who will receive this campaign."
+                                  : "No contacts have these tags yet. Import students on the Contacts tab."
+                              }
+                            />
+                          </>
+                        ) : (
+                          <>
                         <div className="rounded-xl border border-zinc-600 bg-black/30">
                           <label className="flex cursor-pointer items-center gap-3 border-b border-zinc-700 px-3 py-2.5 text-sm font-medium text-zinc-200 hover:bg-zinc-800/40">
                             <input
@@ -3258,6 +3691,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           </div>
                         </div>
                         <p className="text-[11px] text-zinc-500">Tick one or many recipients, or use Select all. Body variables use each contact&apos;s name.</p>
+                          </>
+                        )}
                       </>
                     )}
                     {campaignLaunchType === "csv" && (
@@ -3346,9 +3781,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                       <div key={campaign.id} className="rounded-xl border border-zinc-600 p-3">
                         <div className="flex items-center justify-between">
                           <p className="font-medium text-zinc-100">{campaign.name}</p>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-400">
-                            {campaignTypeLabel(campaign.campaign_type || "contacts")}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-400">
+                              {campaignTypeLabel(campaign.campaign_type || "contacts")}
                           </span>
                           <span
                             className={`rounded-full px-2 py-1 text-xs ${
@@ -3359,7 +3794,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                           >
                             {campaign.status}
                           </span>
-                        </div>
+                          </div>
                         </div>
                         <p className="mt-2 text-sm text-zinc-400">
                           Template: <span className="font-medium text-zinc-200">{campaign.template_name || "—"}</span>
@@ -3930,8 +4365,27 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                     </button>
                   </div>
                   <InlineFeedbackText feedback={inlineFeedback.inboxList} />
+                  <TagChipPicker
+                    tags={tags}
+                    selectedIds={inboxFilterTagId ? [inboxFilterTagId] : []}
+                    onChange={(ids) => setInboxFilterTagId(ids[0] ?? null)}
+                    counts={inboxTagCounts}
+                    allowMultiple={false}
+                    showAllOption
+                    allSelected={!inboxFilterTagId}
+                    onSelectAll={() => setInboxFilterTagId(null)}
+                    emptyLabel="No tags yet — create them on the Contacts tab."
+                  />
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-crm-accent/25 bg-crm-accent/10 px-3 py-2">
+                    <p className="text-sm text-zinc-200">
+                      {inboxFilterTagName ? `Chats · ${inboxFilterTagName}` : "All chats"}
+                    </p>
+                    <p className="text-sm font-semibold tabular-nums text-crm-accent">
+                      {filteredInboxConversations.length} conversation{filteredInboxConversations.length === 1 ? "" : "s"}
+                    </p>
+                  </div>
                   <div className="max-h-80 space-y-2 overflow-auto">
-                    {conversations.map((item) => (
+                    {filteredInboxConversations.map((item) => (
                       <button
                         key={item.conversation_id}
                         className={`w-full rounded-xl border p-3 text-left ${
@@ -3943,6 +4397,11 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                       >
                         <p className="text-sm font-medium">{item.contact_name || "Unknown contact"}</p>
                         <p className="text-xs text-zinc-500">{item.phone_e164}</p>
+                        {(item.tags?.length ?? 0) > 0 && (
+                          <p className="mt-1 text-[10px] text-zinc-500">
+                            {(item.tags ?? []).map((tag) => tag.name).join(" · ")}
+                          </p>
+                        )}
                         {item.messaging_window && (
                           <span className={`mt-1 inline-block ${windowBadgeClass(item.messaging_window)}`}>
                             {windowBadgeLabel(item.messaging_window)}
@@ -3950,7 +4409,13 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                         )}
                       </button>
                     ))}
-                    {conversations.length === 0 && <p className="text-sm text-zinc-500">No conversations yet</p>}
+                    {filteredInboxConversations.length === 0 && (
+                      <p className="text-sm text-zinc-500">
+                        {inboxFilterTagName
+                          ? `No inbox chats for “${inboxFilterTagName}” yet.`
+                          : "No conversations yet"}
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -4219,6 +4684,117 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                         </tbody>
                       </table>
                     </div>
+                  </section>
+
+                  <section className={`${CARD_CLASS} space-y-4`}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h2 className="text-base font-semibold text-zinc-100">Tag performance</h2>
+                        <p className="mt-1 text-sm text-zinc-400">
+                          Campaign messages and estimated spend grouped by CRM tag (e.g. Class 6). Based on sends to contacts
+                          that currently carry each tag.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                            tagPerfDays === 0 ? "bg-crm-accent text-black" : "border border-zinc-500 bg-zinc-800 text-zinc-300"
+                          }`}
+                          onClick={() => setTagPerfDays(0)}
+                        >
+                          All time
+                        </button>
+                        <button
+                          type="button"
+                          className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                            tagPerfDays === 7 ? "bg-crm-accent text-black" : "border border-zinc-500 bg-zinc-800 text-zinc-300"
+                          }`}
+                          onClick={() => setTagPerfDays(7)}
+                        >
+                          7 days
+                        </button>
+                        <button
+                          type="button"
+                          className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                            tagPerfDays === 30 ? "bg-crm-accent text-black" : "border border-zinc-500 bg-zinc-800 text-zinc-300"
+                          }`}
+                          onClick={() => setTagPerfDays(30)}
+                        >
+                          30 days
+                        </button>
+                        <button
+                          type="button"
+                          className={BTN_PRIMARY_BLUE}
+                          disabled={tagPerfLoading || !token}
+                          onClick={() => void loadTagPerformance()}
+                        >
+                          {tagPerfLoading ? (
+                            <>
+                              <Spinner /> Loading…
+                            </>
+                          ) : (
+                            "Refresh"
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                    <InlineFeedbackText feedback={inlineFeedback.tagPerf} />
+                    {tagPerfData && (
+                      <>
+                        <p className="text-xs text-zinc-500">{tagPerfData.disclaimer}</p>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div className="rounded-xl border border-zinc-600 p-3">
+                            <p className="text-xs text-zinc-500">Messages sent (all tags)</p>
+                            <p className="text-xl font-semibold text-emerald-400">{tagPerfData.summary_messages_sent}</p>
+                          </div>
+                          <div className="rounded-xl border border-zinc-600 p-3">
+                            <p className="text-xs text-zinc-500">Failed</p>
+                            <p className="text-xl font-semibold text-red-400">{tagPerfData.summary_messages_failed}</p>
+                          </div>
+                          <div className="rounded-xl border border-zinc-600 p-3">
+                            <p className="text-xs text-zinc-500">Estimated cost (INR)</p>
+                            <p className="text-xl font-semibold text-zinc-100">{formatMetaInr(tagPerfData.summary_estimated_cost_inr)}</p>
+                          </div>
+                        </div>
+                        <div className="overflow-x-auto rounded-xl border border-zinc-600">
+                          <table className="min-w-full text-left text-sm">
+                            <thead className="bg-zinc-800/50 text-zinc-400">
+                              <tr>
+                                <th className="px-3 py-2">Tag</th>
+                                <th className="px-3 py-2">Contacts</th>
+                                <th className="px-3 py-2">Sent</th>
+                                <th className="px-3 py-2">Failed</th>
+                                <th className="px-3 py-2">Pending</th>
+                                <th className="px-3 py-2">Est. cost</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {tagPerfData.tags.map((row) => (
+                                <tr key={row.tag_id} className="border-t border-zinc-700">
+                                  <td className="px-3 py-2 font-medium text-zinc-100">{row.tag_name}</td>
+                                  <td className="px-3 py-2 tabular-nums">{row.contact_count}</td>
+                                  <td className="px-3 py-2 tabular-nums text-emerald-300">{row.messages_sent}</td>
+                                  <td className="px-3 py-2 tabular-nums text-red-300">{row.messages_failed}</td>
+                                  <td className="px-3 py-2 tabular-nums text-amber-300">{row.messages_pending}</td>
+                                  <td className="px-3 py-2 tabular-nums">{formatMetaInr(row.estimated_cost_inr)}</td>
+                                </tr>
+                              ))}
+                              {tagPerfData.tags.length === 0 && (
+                                <tr>
+                                  <td className="px-3 py-4 text-center text-zinc-500" colSpan={6}>
+                                    No tags yet. Create tags on Contacts, import students, then run tag campaigns.
+                                  </td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )}
+                    {!tagPerfData && !tagPerfLoading && (
+                      <p className="text-sm text-zinc-500">Click Refresh to load tag performance.</p>
+                    )}
                   </section>
 
                   <section className={`${CARD_CLASS} space-y-4`}>
