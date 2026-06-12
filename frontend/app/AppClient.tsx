@@ -155,6 +155,8 @@ type PlatformMetaHealth = {
   token_alert_message?: string | null;
   connection_active: boolean;
   phone_number_id?: string;
+  display_phone_number?: string | null;
+  verified_name?: string | null;
   connection_label?: string;
   hints: string[];
 };
@@ -193,6 +195,8 @@ type PlatformAgentOverview = {
   whatsapp: {
     connections_count: number;
     phone_number_id: string | null;
+    display_phone_number: string | null;
+    verified_name: string | null;
     connection_label: string | null;
     waba_id: string | null;
   };
@@ -595,6 +599,25 @@ function windowBadgeClass(window: MessagingWindow | undefined): string {
   return window.is_open
     ? "rounded-full bg-emerald-900/50 px-2 py-0.5 text-xs text-emerald-300"
     : "rounded-full bg-amber-900/50 px-2 py-0.5 text-xs text-amber-200";
+}
+
+function platformWhatsAppNumberLine(
+  health: PlatformMetaHealth | null | undefined,
+  whatsapp?: { display_phone_number?: string | null; phone_number_id?: string | null; verified_name?: string | null }
+): { primary: string | null; secondary: string | null } {
+  const display = whatsapp?.display_phone_number ?? health?.display_phone_number ?? null;
+  const phoneId = whatsapp?.phone_number_id ?? health?.phone_number_id ?? null;
+  const verified = whatsapp?.verified_name ?? health?.verified_name ?? null;
+  if (display) {
+    return {
+      primary: display,
+      secondary: verified ? `${verified}${phoneId ? ` · ID ${phoneId}` : ""}` : phoneId ? `ID ${phoneId}` : null
+    };
+  }
+  if (phoneId) {
+    return { primary: null, secondary: `Phone number ID: ${phoneId}` };
+  }
+  return { primary: null, secondary: null };
 }
 
 type CampaignLaunchType = "contacts" | "csv" | "api";
@@ -5743,11 +5766,24 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                                   ) : null}
                                 </p>
                               )}
-                              {platformOverview.whatsapp.phone_number_id && (
-                                <p className="font-mono text-[10px] text-zinc-500">
-                                  {platformOverview.whatsapp.connection_label}: {platformOverview.whatsapp.phone_number_id}
-                                </p>
-                              )}
+                              {(() => {
+                                const waLine = platformWhatsAppNumberLine(
+                                  platformOverview.meta_health,
+                                  platformOverview.whatsapp
+                                );
+                                if (!waLine.primary && !waLine.secondary) return null;
+                                return (
+                                  <div className="text-xs text-zinc-500">
+                                    <p>
+                                      WhatsApp number:{" "}
+                                      <span className="font-medium text-zinc-200">{waLine.primary ?? "—"}</span>
+                                    </p>
+                                    {waLine.secondary && (
+                                      <p className="mt-0.5 text-[10px] text-zinc-600">{waLine.secondary}</p>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                               <p className="text-xs text-zinc-500">
                                 Last message:{" "}
                                 <span className="text-zinc-300">
@@ -6153,9 +6189,20 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                                   {health?.token_alert_message && tokenAlert && (
                                     <p className="mt-1 text-[11px] text-rose-400/90">{health.token_alert_message}</p>
                                   )}
-                                  {health?.phone_number_id && (
-                                    <p className="mt-1 font-mono text-[10px] text-zinc-500">{health.phone_number_id}</p>
-                                  )}
+                                  {(() => {
+                                    const waLine = platformWhatsAppNumberLine(health);
+                                    if (!waLine.primary && !waLine.secondary) return null;
+                                    return (
+                                      <>
+                                        {waLine.primary && (
+                                          <p className="mt-1 text-[11px] font-medium text-zinc-300">{waLine.primary}</p>
+                                        )}
+                                        {waLine.secondary && (
+                                          <p className="mt-0.5 font-mono text-[10px] text-zinc-500">{waLine.secondary}</p>
+                                        )}
+                                      </>
+                                    );
+                                  })()}
                                 </td>
                                 <td className="px-3 py-3 text-right">
                                   <div className="flex flex-col items-end gap-2">

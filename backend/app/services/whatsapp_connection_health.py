@@ -54,8 +54,9 @@ async def evaluate_whatsapp_connection(connection: WhatsAppConnection | None) ->
 
     token_ok = False
     token_error: str | None = None
+    phone_profile: dict[str, str | None] | None = None
     if token_plain:
-        token_ok, token_error = await MetaClient.verify_phone_number_access(
+        token_ok, token_error, phone_profile = await MetaClient.verify_phone_number_access(
             phone_number_id=connection.phone_number_id,
             access_token=token_plain,
         )
@@ -96,5 +97,7 @@ async def evaluate_whatsapp_connection(connection: WhatsAppConnection | None) ->
         "connection_active": connection.is_active,
         "hints": hints,
         "phone_number_id": connection.phone_number_id,
+        "display_phone_number": phone_profile.get("display_phone_number") if phone_profile else None,
+        "verified_name": phone_profile.get("verified_name") if phone_profile else None,
         "connection_label": connection.label,
     }

@@ -208,18 +208,30 @@ class MetaClient:
             return data
 
     @staticmethod
-    async def verify_phone_number_access(*, phone_number_id: str, access_token: str) -> tuple[bool, str | None]:
-        """Lightweight GET to confirm token can access this phone number."""
+    async def verify_phone_number_access(
+        *, phone_number_id: str, access_token: str
+    ) -> tuple[bool, str | None, dict[str, str | None] | None]:
+        """GET phone number profile to confirm token access and read display number."""
         url = f"{MetaClient.BASE_URL}/{phone_number_id}"
         headers = {"Authorization": f"Bearer {access_token}"}
         async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(url, headers=headers, params={"fields": "id"})
+            response = await client.get(
+                url,
+                headers=headers,
+                params={"fields": "id,display_phone_number,verified_name"},
+            )
             data = response.json()
             if response.status_code >= 400:
                 err = data.get("error") if isinstance(data, dict) else None
                 msg = err.get("message") if isinstance(err, dict) else str(data)
-                return False, msg
-            return True, None
+                return False, msg, None
+            profile: dict[str, str | None] = {
+                "display_phone_number": data.get("display_phone_number")
+                if isinstance(data.get("display_phone_number"), str)
+                else None,
+                "verified_name": data.get("verified_name") if isinstance(data.get("verified_name"), str) else None,
+            }
+            return True, None, profile
 
     @staticmethod
     async def download_media(*, media_id: str, access_token: str) -> tuple[bytes, str]:

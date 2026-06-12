@@ -212,6 +212,8 @@ async def build_agent_overview(db: Session, tenant: Tenant, agent: User) -> dict
             .scalar()
             or 0,
             "phone_number_id": connection.phone_number_id if connection else None,
+            "display_phone_number": meta_health.get("display_phone_number") if meta_health else None,
+            "verified_name": meta_health.get("verified_name") if meta_health else None,
             "connection_label": connection.label if connection else None,
             "waba_id": connection.waba_id if connection else None,
         },
