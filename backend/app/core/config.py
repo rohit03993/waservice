@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     sent_dm_otp_parameter_name: str = "otp"
     phone_login_otp_ttl_seconds: int = 600
 
+    # Optional: forward processed Meta webhook payloads to another CRM (HTTPS).
+    # Leave URL empty to disable — live Meta webhook URL is unchanged.
+    external_crm_webhook_url: str = ""
+    # HMAC-SHA256 secret; sent as X-Waservice-Signature: sha256=<hex> when set.
+    external_crm_webhook_secret: str = ""
+
+    # Local cache for WhatsApp media (survives Meta media URL expiry for inbox viewing).
+    media_cache_dir: str = "/app/media_cache"
+
     @property
     def cors_origins_list(self) -> list[str]:
         value = (self.cors_origins or "").strip()

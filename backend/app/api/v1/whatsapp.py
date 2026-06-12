@@ -1,12 +1,13 @@
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_admin_membership, get_admin_or_agent_membership
@@ -43,7 +44,12 @@ from app.services.messaging_policy import (
     session_send_blocked_message,
 )
 from app.services.meta_errors import format_meta_error
+from app.services.external_crm_webhook import deliver_external_crm_webhook, external_crm_webhook_configured
+from app.services.media_cache import prefetch_message_media_sync, read_cached_media, write_cached_media
 from app.services.template_preview import body_template_variables, build_template_preview_from_stored
+from app.utils.whatsapp_media import extract_waba_media_id, is_media_message_type
+
+_logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 webhook_router = APIRouter(tags=["webhook"])
@@ -52,13 +58,7 @@ _MEDIA_MESSAGE_TYPES = frozenset({"image", "document", "sticker", "video", "audi
 
 
 def _extract_waba_media_id(message_type: str, payload: dict | None) -> str | None:
-    if not payload or message_type not in _MEDIA_MESSAGE_TYPES:
-        return None
-    block = payload.get(message_type)
-    if not isinstance(block, dict):
-        return None
-    mid = block.get("id")
-    return mid.strip() if isinstance(mid, str) and mid.strip() else None
+    return extract_waba_media_id(message_type, payload)
 
 
 # WhatsApp Cloud API: images max ~5 MB; documents can be larger — cap uploads for the API host.
@@ -913,17 +913,29 @@ async def get_message_media(
     media_id = _extract_waba_media_id(msg.type, payload)
     if not media_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No media for this message")
-    connection = _resolve_connection(db=db, tenant_id=membership.tenant_id)
-    token = decrypt_secret(connection.access_token) or ""
-    if not token:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WhatsApp access token not configured")
-    try:
-        content, mime = await MetaClient.download_media(media_id=media_id, access_token=token)
-    except RuntimeError as error:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not download media from Meta",
-        ) from error
+
+    cached = read_cached_media(tenant_id=membership.tenant_id, message_id=message_id)
+    if cached:
+        content, mime = cached
+    else:
+        connection = _resolve_connection(db=db, tenant_id=membership.tenant_id)
+        token = decrypt_secret(connection.access_token) or ""
+        if not token:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="WhatsApp access token not configured")
+        try:
+            content, mime = await MetaClient.download_media(media_id=media_id, access_token=token)
+            write_cached_media(
+                tenant_id=membership.tenant_id,
+                message_id=message_id,
+                content=content,
+                mime=mime,
+            )
+        except RuntimeError as error:
+            _logger.warning("Media download failed for message %s: %s", message_id, error)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=format_meta_error(error),
+            ) from error
     disp = _media_content_disposition(msg.type, payload)
     headers = {"Content-Disposition": disp} if disp else {}
     return Response(content=content, media_type=mime, headers=headers)
@@ -988,6 +1000,7 @@ async def reply_text(
 @router.post("/reply-media")
 async def reply_media(
     request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     conversation_id: str = Form(...),
     to_phone_e164: str = Form(...),
@@ -1092,19 +1105,25 @@ async def reply_media(
                 block["caption"] = cap
             msg_payload = {"document": block, "meta_response": data}
 
-        db.add(
-            Message(
-                tenant_id=membership.tenant_id,
-                conversation_id=conversation.id,
-                contact_id=conversation.contact_id,
-                direction="outbound",
-                wamid=message_id,
-                type=kind,
-                status="sent",
-                payload=msg_payload,
-            )
+        saved = Message(
+            tenant_id=membership.tenant_id,
+            conversation_id=conversation.id,
+            contact_id=conversation.contact_id,
+            direction="outbound",
+            wamid=message_id,
+            type=kind,
+            status="sent",
+            payload=msg_payload,
         )
+        db.add(saved)
+        db.flush()
         conversation.updated_at = datetime.now(timezone.utc)
+        background_tasks.add_task(
+            prefetch_message_media_sync,
+            message_id=str(saved.id),
+            tenant_id=str(membership.tenant_id),
+            connection_id=str(connection.id),
+        )
         db.commit()
 
     return {"success": True, "message_id": message_id}
@@ -1168,8 +1187,18 @@ def verify_webhook(
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Webhook verification failed")
 
 
+def _forward_to_external_crm(meta_payload: dict, phone_number_ids: list[str]) -> None:
+    if not external_crm_webhook_configured():
+        return
+    deliver_external_crm_webhook(meta_payload=meta_payload, phone_number_ids=phone_number_ids)
+
+
 @webhook_router.post("/api/v1/webhook/whatsapp")
-async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+async def receive_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict:
     client_ip = request.client.host if request.client else "unknown"
     check_rate_limit(key=f"webhook:ip:{client_ip}", limit=600, window_seconds=60)
     body_bytes = await request.body()
@@ -1271,6 +1300,14 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> di
                 payload=inbound,
             )
             db.add(msg)
+            db.flush()
+            if is_media_message_type(msg.type):
+                background_tasks.add_task(
+                    prefetch_message_media_sync,
+                    message_id=str(msg.id),
+                    tenant_id=str(tenant_id),
+                    connection_id=str(connection.id),
+                )
 
         for status_item in value.get("statuses", []) or []:
             wamid = status_item.get("id")
@@ -1282,4 +1319,8 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> di
                 existing.payload = {**(existing.payload or {}), "status_event": status_item}
 
     db.commit()
+
+    if external_crm_webhook_configured():
+        background_tasks.add_task(_forward_to_external_crm, payload, list(phone_ids))
+
     return {"success": True}

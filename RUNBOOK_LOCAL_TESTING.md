@@ -99,7 +99,19 @@ Without this tunnel:
    - Verify conversations/messages once webhooks are configured.
    - Send reply from thread.
 
-## 8) Common local issues
+## 8) Inbox media not loading
+
+If the inbox shows **“Media unavailable”** or **“Could not download media from Meta”**:
+
+| Cause | Fix |
+|--------|-----|
+| **Access token expired** | WhatsApp Settings → paste a fresh **System User** token (not short-lived API Setup token). |
+| **Media expired on Meta** | Meta only keeps media IDs for a limited time (~30 days). Old chats cannot be re-downloaded — ask the customer to **resend**. |
+| **New messages** | After deploy, inbound media is **cached on the server** when the webhook arrives (volume `media_cache` in Docker). |
+
+Check API logs for the real Meta error after deploy (messages are more specific than before).
+
+## 9) Common local issues
 
 - 401/403 from Meta: invalid token, missing permissions, or wrong phone number id.
 - Template send fail: template not approved or language mismatch.
@@ -107,19 +119,19 @@ Without this tunnel:
 - Empty templates list: wrong `waba_id` or token missing template permissions.
 - Worker not sending: worker container not running or redis unavailable.
 
-## 9) Security baseline already applied
+## 10) Security baseline already applied
 
 - WhatsApp access token and app secret are stored encrypted (when `ENCRYPTION_KEY` is set).
 - Webhook signature verification checks `X-Hub-Signature-256` when app secret is configured.
 - JWT auth + role gates are in place for admin-controlled actions.
 
-## 10) Next upgrades before production
+## 11) Next upgrades before production
 
 - Add API rate limits (auth + tenant endpoints).
 - Enforce stricter WhatsApp policy checks (template/session rules).
 - Add integration tests for auth, webhooks, campaigns, retries.
 
-## 11) Admin audit log API
+## 12) Admin audit log API
 
 Use this route with admin bearer token:
 

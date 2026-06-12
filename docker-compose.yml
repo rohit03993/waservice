@@ -39,7 +39,15 @@ services:
         condition: service_started
     volumes:
       - ./backend:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - media_cache:/app/media_cache
+    command: >
+      sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
   worker:
     build:
@@ -49,14 +57,28 @@ services:
     env_file:
       - .env
     depends_on:
-      db:
+      backend:
         condition: service_healthy
-      redis:
-        condition: service_started
     volumes:
       - ./backend:/app
     command: python -m app.workers.worker
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: msg_service_frontend
+    ports:
+      - "3010:3010"
+    environment:
+      API_INTERNAL_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
+  media_cache:

@@ -1,0 +1,16 @@
+{
+  "python.analysis.exclude": [
+    "**/node_modules",
+    "**/.next",
+    "**/__pycache__",
+    "**/.venv",
+    "**/alembic/versions",
+    "backend/media_cache"
+  ],
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/.next/**": true,
+    "**/__pycache__/**": true,
+    "backend/media_cache/**": true
+  }
+}

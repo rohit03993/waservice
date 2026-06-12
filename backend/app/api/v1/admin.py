@@ -14,6 +14,12 @@ from app.schemas.integrations import (
     IntegrationApiKeyListItem,
 )
 from app.services.audit import log_admin_action
+from app.services.external_crm_webhook import (
+    deliver_external_crm_webhook,
+    external_crm_webhook_configured,
+    external_crm_webhook_status,
+    sample_test_payload,
+)
 from app.services.integration_keys import generate_integration_api_key, hash_integration_secret
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -95,6 +101,49 @@ def list_integration_keys(
         )
         for item in rows
     ]
+
+
+@router.get("/external-crm-webhook/status")
+def get_external_crm_webhook_status(
+    membership: Membership = Depends(get_admin_membership),
+) -> dict:
+    """Whether outbound forwarding to another CRM is enabled (URL from server env)."""
+    _ = membership
+    return external_crm_webhook_status()
+
+
+@router.post("/external-crm-webhook/test")
+def test_external_crm_webhook(
+    membership: Membership = Depends(get_admin_membership),
+    db: Session = Depends(get_db),
+) -> dict:
+    """POST a sample event to EXTERNAL_CRM_WEBHOOK_URL (configure in .env on the server)."""
+    if not external_crm_webhook_configured():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Set EXTERNAL_CRM_WEBHOOK_URL in the API server .env, then restart the backend.",
+        )
+    payload, phone_ids = sample_test_payload()
+    ok, err = deliver_external_crm_webhook(meta_payload=payload, phone_number_ids=phone_ids)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=err or "Delivery failed",
+        )
+    log_admin_action(
+        db=db,
+        tenant_id=membership.tenant_id,
+        actor_user_id=membership.user_id,
+        action="admin.external_crm_webhook.test",
+        resource_type="external_crm_webhook",
+        resource_id=None,
+        details={"url_host": external_crm_webhook_status().get("url_host")},
+    )
+    db.commit()
+    return {
+        "success": True,
+        "message": "Test event delivered. Check your external CRM receiver logs.",
+    }
 
 
 @router.delete("/integration-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)

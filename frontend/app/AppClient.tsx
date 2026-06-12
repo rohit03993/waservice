@@ -645,7 +645,17 @@ function InboxMessageMedia({
     );
   }
   if (error) {
-    return <p className="text-xs text-rose-400/90">{error}</p>;
+    const hint =
+      /expired|invalid|token|no longer available/i.test(error)
+        ? "Update your System User token in WhatsApp Settings, or ask the contact to resend the file."
+        : "Check WhatsApp Settings (valid token) or ask the contact to resend.";
+    return (
+      <div className="mt-1 rounded-lg border border-rose-500/30 bg-rose-950/40 px-2.5 py-2 text-xs text-rose-200/90">
+        <p className="font-medium text-rose-100">Media unavailable</p>
+        <p className="mt-0.5 text-[11px] leading-snug">{error}</p>
+        <p className="mt-1 text-[10px] text-rose-300/80">{hint}</p>
+      </div>
+    );
   }
   if (!blobUrl) return null;
 
@@ -1254,6 +1264,12 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [newIntegrationLabel, setNewIntegrationLabel] = useState("");
   const [revealedIntegrationKey, setRevealedIntegrationKey] = useState<string | null>(null);
   const [creatingIntegrationKey, setCreatingIntegrationKey] = useState(false);
+  const [externalWebhookStatus, setExternalWebhookStatus] = useState<{
+    configured: boolean;
+    url_host: string;
+    signing_enabled: boolean;
+  } | null>(null);
+  const [testingExternalWebhook, setTestingExternalWebhook] = useState(false);
   const [metaPricingLoading, setMetaPricingLoading] = useState(false);
   const [metaPricingData, setMetaPricingData] = useState<MetaPricingResponse | null>(null);
   const [metaPricingGranularity, setMetaPricingGranularity] = useState<"DAILY" | "HALF_HOUR" | "MONTHLY">("DAILY");
@@ -2195,6 +2211,7 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }
     if (activeTab === "integrations") {
       void loadIntegrationKeys(true);
+      void loadExternalWebhookStatus(true);
       return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2419,7 +2436,8 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
         loadContacts(undefined, true),
         loadCampaigns(undefined, true),
         loadTemplates(undefined, true),
-        loadConversations(undefined, true)
+        loadConversations(undefined, true),
+        loadWhatsAppConnections()
       ]);
       setStatsUpdatedAt(new Date());
       setStatsSnapshotLoaded(true);
@@ -2477,6 +2495,34 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       flash("integrationPanel", "Key revoked.", "success");
     } catch (error) {
       flash("integrationPanel", (error as Error).message, "error");
+    }
+  }
+
+  async function loadExternalWebhookStatus(quiet?: boolean) {
+    try {
+      const data = await apiRequest<{ configured: boolean; url_host: string; signing_enabled: boolean }>(
+        "/admin/external-crm-webhook/status",
+        { headers: authHeaders }
+      );
+      setExternalWebhookStatus(data);
+      if (!quiet) flash("integrationPanel", "Outbound webhook status updated.", "success");
+    } catch (error) {
+      if (!quiet) flash("integrationPanel", (error as Error).message, "error");
+    }
+  }
+
+  async function testExternalCrmWebhook() {
+    setTestingExternalWebhook(true);
+    try {
+      const data = await apiRequest<{ success: boolean; message: string }>("/admin/external-crm-webhook/test", {
+        method: "POST",
+        headers: authHeaders
+      });
+      flash("integrationPanel", data.message || "Test delivered.", "success");
+    } catch (error) {
+      flash("integrationPanel", (error as Error).message, "error");
+    } finally {
+      setTestingExternalWebhook(false);
     }
   }
 
@@ -3200,6 +3246,32 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                 <InlineFeedbackText feedback={inlineFeedback.sectionRefresh} className="text-right" />
               </div>
             </section>
+            {waConnections.length === 0 && (
+              <section className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4 space-y-3">
+                <h3 className="text-base font-semibold text-amber-100">Get started — WhatsApp CRM setup</h3>
+                <ol className="list-decimal list-inside space-y-1 text-sm text-amber-100/90">
+                  <li>
+                    Open <strong>WhatsApp Settings</strong> and save Phone Number ID, WABA ID, access token, verify token, and app secret.
+                  </li>
+                  <li>
+                    In <strong>Templates</strong>, sync from Meta and confirm templates show as <strong>APPROVED</strong>.
+                  </li>
+                  <li>Send a template test to your phone from Settings.</li>
+                  <li>Add contacts, then create a campaign or use <strong>Integrations</strong> for an external CRM.</li>
+                  <li>For inbound inbox: set Meta webhook to your public API URL (see runbook in repo docs).</li>
+                </ol>
+                <button
+                  type="button"
+                  className={`${BTN_PRIMARY_BLUE} !min-h-0 py-2 text-sm`}
+                  onClick={() => {
+                    setActiveTab("settings");
+                    router.push("/dashboard/settings");
+                  }}
+                >
+                  Go to WhatsApp Settings
+                </button>
+              </section>
+            )}
             {activeTab === "contacts" && (
               <>
                 <section className={`${CARD_CLASS} space-y-4`}>
@@ -4990,9 +5062,50 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                       <p>
                         <span className="text-emerald-700">POST</span> {API_BASE}/integrations/whatsapp/send-text
                       </p>
+                      <p>
+                        <span className="text-emerald-700">POST</span> {API_BASE}/integrations/campaigns/&#123;campaign_id&#125;/trigger
+                      </p>
                       <p className="mt-2 font-sans text-[10px] text-zinc-500">
                         JSON body fields match the dashboard API (template name, language, optional body_parameters; or plain text for session messages).
                       </p>
+                    </div>
+                  </div>
+
+                  <div className={`${CARD_CLASS} space-y-3`}>
+                    <h3 className="text-base font-semibold text-zinc-100">Outbound webhooks (other CRM receives events)</h3>
+                    <p className="text-sm text-zinc-400">
+                      Optional. After Meta hits this app, a copy of the webhook is POSTed to your other CRM. Configure on the{" "}
+                      <strong className="text-zinc-200">API server</strong> (not in the browser):{" "}
+                      <code className="rounded bg-zinc-800 px-1 text-xs">EXTERNAL_CRM_WEBHOOK_URL</code> and optional{" "}
+                      <code className="rounded bg-zinc-800 px-1 text-xs">EXTERNAL_CRM_WEBHOOK_SECRET</code>, then restart backend.
+                      Meta callback URL stays the same — safe for live Wapaldigital.
+                    </p>
+                    {externalWebhookStatus?.configured ? (
+                      <p className="text-sm text-emerald-400">
+                        Forwarding enabled → {externalWebhookStatus.url_host}
+                        {externalWebhookStatus.signing_enabled ? " (signed)" : ""}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-zinc-500">Forwarding not configured on this server.</p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" className={BTN_SECONDARY} onClick={() => void loadExternalWebhookStatus(false)}>
+                        Refresh status
+                      </button>
+                      <button
+                        type="button"
+                        className={BTN_PRIMARY_BLUE}
+                        disabled={testingExternalWebhook || !externalWebhookStatus?.configured}
+                        onClick={() => void testExternalCrmWebhook()}
+                      >
+                        {testingExternalWebhook ? (
+                          <>
+                            <Spinner /> Sending test…
+                          </>
+                        ) : (
+                          "Send test event"
+                        )}
+                      </button>
                     </div>
                   </div>
 

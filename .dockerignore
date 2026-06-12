@@ -1,0 +1,19 @@
+# Shrink frontend image build context (compose context is project root)
+.git
+.env
+.env.*
+!.env.example
+
+backend/.venv
+backend/__pycache__
+**/__pycache__
+**/*.pyc
+
+frontend/node_modules
+frontend/.next
+node_modules
+.next
+
+docs
+*.md
+!frontend/README.md

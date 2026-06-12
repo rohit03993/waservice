@@ -26,6 +26,7 @@ _META_ERROR_HINTS: dict[int, str] = {
     ),
     132005: "Template hydration failed — check template name and language code.",
     133010: "Phone number not registered or not available for sending.",
+    131053: "Media not found or expired on Meta. Ask the customer to resend the file.",
 }
 
 
@@ -59,6 +60,11 @@ def format_meta_error(exc: BaseException) -> str:
             return f"{hint} ({message})"
         return hint
     if message:
+        if re.search(r"media url not found|not found.*media|expired.*media|unsupported get request", message, re.I):
+            return (
+                "Media is no longer available from Meta (files expire after ~30 days or the link expired). "
+                "Ask the customer to resend, or refresh your access token in WhatsApp Settings."
+            )
         if re.search(r"customer service|24.?hour|re-engagement|template", message, re.I):
             return f"{message} — Use an approved template if the 24-hour window is closed."
         return message

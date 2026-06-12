@@ -50,6 +50,7 @@ This starts:
 - **redis** — queue for the worker.
 - **backend** — API + webhook routes at **`http://localhost:8010`** (Swagger: **`http://localhost:8010/docs`**).
 - **worker** — processes campaign send jobs.
+- **frontend** — production Next.js UI at **`http://localhost:3010`** (no separate `npm run dev` terminal).
 
 ### Database migrations
 
@@ -67,16 +68,16 @@ docker compose exec backend alembic current
 
 ---
 
-## Run the frontend (local)
+## Frontend (included in Compose)
 
-In a **second** terminal (project root):
+The UI is built and served by the **`frontend`** container. After `docker compose up --build`, open **`http://localhost:3010`**.
+
+Optional — UI dev mode with hot reload (second terminal, only while editing React code):
 
 ```bash
 npm run install:frontend
 npm run dev
 ```
-
-Open **`http://localhost:3010`**.
 
 ### How the UI talks to the API (local)
 
