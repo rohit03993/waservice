@@ -98,17 +98,3 @@ async def aisensy_campaign_trigger(
 ) -> AiSensyCampaignTriggerResponse:
     """Drop-in replacement for AiSensy: base URL + /campaign/t1/api/v2."""
     return await _handle_aisensy_campaign_trigger(payload, request, db)
-
-
-@router.post("", response_model=AiSensyCampaignTriggerResponse)
-async def aisensy_campaign_trigger_api_v1_root(
-    payload: AiSensyCampaignTriggerRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-) -> AiSensyCampaignTriggerResponse:
-    """
-    Taskbook (and some CRMs) POST directly to AISENSY_API_URL with no path suffix.
-
-    Set AISENSY_API_URL=https://<host>/api/v1
-    """
-    return await _handle_aisensy_campaign_trigger(payload, request, db)

@@ -1,12 +1,16 @@
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.api.aisensy_compat import _handle_aisensy_campaign_trigger
 from app.api.v1 import api_router
 from app.api.v1.whatsapp import webhook_router
+from app.db.session import get_db
+from app.schemas.aisensy_compat import AiSensyCampaignTriggerRequest, AiSensyCampaignTriggerResponse
 from app.core.config import get_settings
 from app.core.secrets import ensure_encryption_key_configured
 
@@ -108,7 +112,20 @@ if settings.trusted_hosts_list:
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 app.include_router(webhook_router)
-# AiSensy paths live under api_router: POST /api/v1 and POST /api/v1/campaign/t1/api/v2
+
+
+@app.post(
+    settings.api_v1_prefix,
+    response_model=AiSensyCampaignTriggerResponse,
+    tags=["aisensy-compat"],
+)
+async def aisensy_taskbook_api_v1_root(
+    payload: AiSensyCampaignTriggerRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AiSensyCampaignTriggerResponse:
+    """Taskbook posts to AISENSY_API_URL=https://<host>/api/v1 (no path suffix)."""
+    return await _handle_aisensy_campaign_trigger(payload, request, db)
 
 
 @app.exception_handler(Exception)
