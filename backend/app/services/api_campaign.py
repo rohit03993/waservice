@@ -12,7 +12,6 @@ from app.models.campaign import Campaign
 from app.models.campaign_recipient import CampaignRecipient
 from app.models.contact import Contact
 from app.models.message_template import MessageTemplate
-from app.services.campaign_dispatch import queue_single_campaign_recipient
 from app.services.messaging_policy import build_template_body_parameters
 from app.services.template_preview import body_template_variables
 
@@ -73,10 +72,11 @@ def trigger_api_campaign_send(
     recipient = CampaignRecipient(
         campaign_id=campaign.id,
         contact_id=contact.id,
-        state="pending",
+        state="queued",
         template_variables=stored_vars,
+        last_error=None,
+        next_retry_at=None,
     )
     db.add(recipient)
     db.flush()
-    queue_single_campaign_recipient(db=db, campaign=campaign, recipient=recipient, tenant_id=tenant_id)
     return recipient

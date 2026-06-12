@@ -19,6 +19,7 @@ from app.schemas.integrations import (
 from app.schemas.whatsapp import template_body_parameters_to_meta_components
 from app.services.api_campaign import trigger_api_campaign_send
 from app.services.audit import log_admin_action
+from app.services.queue import enqueue_campaign_job
 from app.services.outbound_whatsapp import send_whatsapp_template_message, send_whatsapp_text_message
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
@@ -189,6 +190,7 @@ async def integration_trigger_api_campaign(
         },
     )
     db.commit()
+    enqueue_campaign_job(campaign_id=campaign.id, recipient_id=recipient.id, tenant_id=ctx.tenant_id)
     return IntegrationApiCampaignTriggerResponse(
         success=True,
         campaign_id=str(campaign.id),

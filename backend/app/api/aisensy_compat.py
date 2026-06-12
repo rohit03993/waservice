@@ -19,6 +19,7 @@ from app.schemas.aisensy_compat import AiSensyCampaignTriggerRequest, AiSensyCam
 from app.services.aisensy_compat import resolve_live_api_campaign, template_params_to_body_parameters
 from app.services.api_campaign import trigger_api_campaign_send
 from app.services.audit import log_admin_action
+from app.services.queue import enqueue_campaign_job
 
 router = APIRouter(tags=["aisensy-compat"])
 
@@ -81,6 +82,7 @@ async def _handle_aisensy_campaign_trigger(
         },
     )
     db.commit()
+    enqueue_campaign_job(campaign_id=campaign.id, recipient_id=recipient.id, tenant_id=ctx.tenant_id)
 
     return AiSensyCampaignTriggerResponse(
         success=True,
