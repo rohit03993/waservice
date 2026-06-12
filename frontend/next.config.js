@@ -8,6 +8,10 @@ const nextConfig = {
       {
         source: "/api/:path*",
         destination: `${apiInternalUrl}/api/:path*`
+      },
+      {
+        source: "/campaign/:path*",
+        destination: `${apiInternalUrl}/campaign/:path*`
       }
     ];
   }

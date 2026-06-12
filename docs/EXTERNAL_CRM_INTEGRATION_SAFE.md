@@ -17,6 +17,7 @@ Meta webhooks (inbound/status) ───────────────┘ 
 | Send template from external app | Yes — `POST /api/v1/integrations/whatsapp/send-template` |
 | Send session text (24h window) | Yes — `POST /api/v1/integrations/whatsapp/send-text` |
 | AiSensy-style trigger | Yes — `POST /api/v1/integrations/campaigns/{id}/trigger` |
+| **AiSensy drop-in (no CRM code change)** | Yes — `POST /campaign/t1/api/v2` or `POST /api/v1/campaign/t1/api/v2` |
 | Create integration API key | Yes — admin UI **Integrations** or `POST /api/v1/admin/integration-keys` |
 | Meta webhook (inbound to waservice) | Yes — `GET/POST /api/v1/webhook/whatsapp` |
 | Forward webhooks to other CRM | **Yes (optional)** — set `EXTERNAL_CRM_WEBHOOK_URL` on API server; test from **Integrations** tab |
@@ -148,7 +149,45 @@ Do this in a **planned window**:
 
 ---
 
-## 5. Other CRM configuration (copy-paste template)
+## 5. AiSensy drop-in (attendance / legacy CRM — no code change)
+
+If your CRM already posts to AiSensy (`apiKey`, `campaignName`, `destination`, `templateParams`), point it at waservice instead.
+
+| AiSensy (before) | waservice (after) |
+|------------------|-------------------|
+| `AISENSY_API_URL=https://backend.aisensy.com` | `AISENSY_API_URL=https://<API_HOST>/api/v1` |
+| `AISENSY_API_KEY=<aisensy jwt>` | `AISENSY_API_KEY=wsk.<uuid>.<secret>` (Integrations tab) |
+| `campaignName` = live AiSensy campaign | Same string as **live API campaign name** in waservice, **or** the Meta **template_name** (e.g. `parent_attendance_auto_in_agra`) |
+| `destination` = `9198…` | Unchanged |
+| `templateParams` = `["a","b"]` | Unchanged |
+
+**Endpoint** (same JSON body as AiSensy):
+
+```http
+POST https://<API_HOST>/api/v1/campaign/t1/api/v2
+Content-Type: application/json
+
+{
+  "apiKey": "wsk.<uuid>.<secret>",
+  "campaignName": "parent_attendance_auto_in_agra",
+  "destination": "919876543210",
+  "userName": "Parent Name",
+  "templateParams": ["Ward", "Roll", "09:15 AM", "12 Jun 2026"]
+}
+```
+
+Also available at `POST https://<API_HOST>/campaign/t1/api/v2` if your reverse proxy forwards `/campaign` to the API (not required when using `/api/v1/...`).
+
+**waservice setup (per template / automation):**
+
+1. Template approved in Meta → synced in waservice.
+2. API campaign created → **Go Live** — use the **same name** as `campaignName` in the CRM, or name the campaign after the template.
+3. Integration key created; paste into `AISENSY_API_KEY`.
+4. Worker running on production.
+
+---
+
+## 6. Other CRM configuration (copy-paste template)
 
 Give your CRM team:
 
@@ -168,7 +207,7 @@ Give your CRM team:
 
 ---
 
-## 6. What stays isolated (won’t “break” live data)
+## 7. What stays isolated (won’t “break” live data)
 
 | Isolated by | Effect |
 |-------------|--------|
@@ -181,7 +220,7 @@ Integration sends use the tenant’s **default WhatsApp connection** (same as li
 
 ---
 
-## 7. Risks to avoid
+## 8. Risks to avoid
 
 | Mistake | Impact |
 |---------|--------|
@@ -194,7 +233,7 @@ Integration sends use the tenant’s **default WhatsApp connection** (same as li
 
 ---
 
-## 8. Webhooks **to** other CRM (optional)
+## 9. Webhooks **to** other CRM (optional)
 
 On the **API server** `.env` (then restart backend):
 
@@ -230,7 +269,7 @@ Test from dashboard: **Integrations** → **Send test event**, or:
 
 ---
 
-## 9. Quick test commands (production)
+## 10. Quick test commands (production)
 
 Replace host and key:
 
@@ -249,7 +288,7 @@ curl -sS "https://API_HOST/api/v1/health"
 
 ---
 
-## 10. Decision tree
+## 11. Decision tree
 
 ```text
 Is live Wapaldigital already THIS waservice API on production?
@@ -262,7 +301,7 @@ Is live Wapaldigital already THIS waservice API on production?
 
 ---
 
-## 11. Do this now (live rollout checklist)
+## 12. Do this now (live rollout checklist)
 
 | Step | Action |
 |------|--------|

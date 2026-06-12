@@ -581,6 +581,129 @@ function isApprovedTemplate(item: TemplateItem): boolean {
   return (item.status || "").toUpperCase() === "APPROVED";
 }
 
+function buildApiTriggerRequestBody(bodyVars: string[]): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    to_phone_e164: "+919876543210",
+    name: "Contact name",
+  };
+  if (bodyVars.length > 0) {
+    base.body_parameters = bodyVars.map((key) => ({
+      type: "text",
+      text: /^\d+$/.test(key) ? `Value for {{${key}}}` : `Sample ${key.replace(/_/g, " ")}`,
+    }));
+  }
+  return base;
+}
+
+function buildApiCampaignTriggerSnippet(apiBase: string, campaignId: string, bodyVars: string[]): string {
+  const body = buildApiTriggerRequestBody(bodyVars);
+  return `POST ${apiBase}/integrations/campaigns/${campaignId}/trigger
+Header: X-Integration-Key: wsk.<key-id>.<secret>
+Content-Type: application/json
+
+${JSON.stringify(body, null, 2)}`;
+}
+
+function buildApiCampaignCurlSnippet(apiBase: string, campaignId: string, bodyVars: string[]): string {
+  const body = buildApiTriggerRequestBody(bodyVars);
+  return `curl -X POST "${apiBase}/integrations/campaigns/${campaignId}/trigger" \\
+  -H "Content-Type: application/json" \\
+  -H "X-Integration-Key: wsk.<key-id>.<secret>" \\
+  -d '${JSON.stringify(body)}'`;
+}
+
+function ApiCampaignTriggerKit({
+  campaignId,
+  campaignStatus,
+  templateName,
+  templateLanguage,
+  templateItems,
+}: {
+  campaignId: string;
+  campaignStatus?: string;
+  templateName: string | null;
+  templateLanguage: string | null;
+  templateItems: TemplateItem[];
+}) {
+  const [copied, setCopied] = useState<"http" | "curl" | null>(null);
+  const template =
+    templateName && templateLanguage
+      ? templateItems.find((t) => t.name === templateName && t.language === templateLanguage)
+      : undefined;
+  const bodyVars = template?.body_variables ?? [];
+  const httpSnippet = buildApiCampaignTriggerSnippet(API_BASE, campaignId, bodyVars);
+  const curlSnippet = buildApiCampaignCurlSnippet(API_BASE, campaignId, bodyVars);
+
+  async function copy(which: "http" | "curl") {
+    await navigator.clipboard.writeText(which === "http" ? httpSnippet : curlSnippet);
+    setCopied(which);
+    window.setTimeout(() => setCopied(null), 2000);
+  }
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-indigo-800/40 bg-indigo-950/20 p-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-indigo-200/90">External CRM trigger (Option A)</p>
+      {campaignStatus && campaignStatus !== "live" && (
+        <p className="text-xs text-amber-200">
+          Set this campaign to <strong className="text-amber-100">live</strong> before your CRM can trigger sends.
+        </p>
+      )}
+      <p className="font-mono text-[10px] text-zinc-400">campaign_id: {campaignId}</p>
+      {templateName && (
+        <p className="text-xs text-zinc-400">
+          Template: <span className="font-medium text-zinc-200">{templateName}</span>
+          {templateLanguage ? ` (${templateLanguage})` : ""}
+        </p>
+      )}
+      {bodyVars.length > 0 && (
+        <div className="overflow-x-auto">
+          <p className="mb-1 text-[10px] font-medium text-zinc-400">Variable mapping</p>
+          <table className="min-w-full text-left text-[11px] text-zinc-300">
+            <thead>
+              <tr className="text-zinc-500">
+                <th className="py-1 pr-3">Template slot</th>
+                <th className="py-1 pr-3">API field</th>
+                <th className="py-1">Example</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bodyVars.map((key, i) => (
+                <tr key={`${key}-${i}`} className="border-t border-zinc-700/80">
+                  <td className="py-1 pr-3 font-mono">{/^\d+$/.test(key) ? `{{${key}}}` : key}</td>
+                  <td className="py-1 pr-3 font-mono">body_parameters[{i}]</td>
+                  <td className="py-1 text-zinc-400">
+                    {/^\d+$/.test(key) ? `Value for {{${key}}}` : `Sample ${key.replace(/_/g, " ")}`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="mt-1 text-[10px] text-zinc-500">
+            Your CRM sends one object per variable, in the same order as the template body.
+          </p>
+        </div>
+      )}
+      <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-black/40 p-2 text-[10px] text-zinc-300">{httpSnippet}</pre>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="rounded-lg border border-indigo-500 px-2 py-1 text-xs text-indigo-200 hover:bg-indigo-950/50"
+          onClick={() => void copy("http")}
+        >
+          {copied === "http" ? "Copied!" : "Copy HTTP"}
+        </button>
+        <button
+          type="button"
+          className="rounded-lg border border-zinc-500 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800/50"
+          onClick={() => void copy("curl")}
+        >
+          {copied === "curl" ? "Copied!" : "Copy cURL"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function formatWindowRemaining(seconds: number | null | undefined): string {
   if (seconds == null || seconds <= 0) return "";
   const hours = Math.floor(seconds / 3600);
@@ -1269,6 +1392,11 @@ export function AppClient({
   const [waTestToPhone, setWaTestToPhone] = useState("");
   const [templateItems, setTemplateItems] = useState<TemplateItem[]>([]);
   const approvedTemplates = useMemo(() => templateItems.filter(isApprovedTemplate), [templateItems]);
+  const apiCampaigns = useMemo(
+    () => campaigns.filter((c) => (c.campaign_type || "contacts") === "api"),
+    [campaigns]
+  );
+  const liveApiCampaigns = useMemo(() => apiCampaigns.filter((c) => c.status === "live"), [apiCampaigns]);
 
   const launchRecipientCount = useMemo(() => {
     if (campaignLaunchType === "contacts") {
@@ -2182,6 +2310,25 @@ export function AppClient({
     }
   }
 
+  function startApiCampaignFromTemplate(template: TemplateItem) {
+    if (!isApprovedTemplate(template)) {
+      flash("campaignCreate", "Template must be APPROVED in Meta before you can create an API campaign.", "error");
+      return;
+    }
+    setCampaignLaunchType("api");
+    setWaTemplateName(template.name);
+    setWaTemplateLanguage(template.language);
+    setCampaignName(`${template.name}_api`);
+    setCampaignTemplateVars(initTemplateVarValues(template, null));
+    setSelectedApiCampaignId(null);
+    setActiveTab("campaigns");
+    flash(
+      "campaignCreate",
+      `Prefilled API campaign for "${template.name}". Review the name and click Create API campaign, then Go Live.`,
+      "success"
+    );
+  }
+
   async function startCampaign(campaignId: string) {
     try {
       await apiRequest<{ status: string; queued_count: number }>(`/campaigns/${campaignId}/start`, {
@@ -2493,6 +2640,8 @@ export function AppClient({
     if (activeTab === "integrations") {
       void loadIntegrationKeys(true);
       void loadExternalWebhookStatus(true);
+      void loadCampaigns(undefined, true);
+      void loadTemplates(undefined, true);
       return;
     }
     if (activeTab === "platform" && isSuperAdmin) {
@@ -4505,9 +4654,13 @@ export function AppClient({
                         </div>
                         {(selectedApiCampaignId === campaign.id || campaign.status === "live") &&
                           (campaign.campaign_type || "contacts") === "api" && (
-                            <pre className="mt-2 overflow-x-auto rounded-lg bg-black/40 p-2 text-[10px] text-zinc-300">{`POST ${API_BASE}/integrations/campaigns/${campaign.id}/trigger
-Header: X-Integration-Key: wsk.<key-id>.<secret>
-Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "text": "Rohit" }] }`}</pre>
+                            <ApiCampaignTriggerKit
+                              campaignId={campaign.id}
+                              campaignStatus={campaign.status}
+                              templateName={campaign.template_name}
+                              templateLanguage={campaign.template_language}
+                              templateItems={templateItems}
+                            />
                           )}
                       </div>
                     ))}
@@ -5014,6 +5167,27 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                         <span className={templateStatusBadgeClass(item.status)}>
                           {item.status || "unknown"}
                         </span>
+                        {item.preview_text?.trim() && (
+                          <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs text-zinc-400">{item.preview_text.trim()}</p>
+                        )}
+                        {item.body_variables && item.body_variables.length > 0 && (
+                          <p className="mt-1 text-[10px] text-zinc-500">
+                            Variables: {item.body_variables.map((v) => (/^\d+$/.test(v) ? `{{${v}}}` : v)).join(", ")}
+                          </p>
+                        )}
+                        {isApprovedTemplate(item) ? (
+                          <button
+                            type="button"
+                            className="mt-2 rounded-lg border border-indigo-500 px-2 py-1 text-xs text-indigo-200 hover:bg-indigo-950/40"
+                            onClick={() => startApiCampaignFromTemplate(item)}
+                          >
+                            Create API campaign
+                          </button>
+                        ) : (
+                          <p className="mt-2 text-[10px] text-zinc-500">
+                            After Meta approves, sync templates, then create an API campaign here.
+                          </p>
+                        )}
                       </div>
                     ))}
                     {templateItems.length === 0 && <p className="text-sm text-zinc-500">No templates loaded yet.</p>}
@@ -6340,25 +6514,120 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
               )}
               {activeTab === "integrations" && (
                 <section className="space-y-4">
-                  <div className={`${CARD_CLASS} space-y-3`}>
-                    <h3 className="text-base font-semibold text-zinc-100">Server-to-server API</h3>
+                  <div className={`${CARD_CLASS} space-y-3 border-emerald-800/40`}>
+                    <h3 className="text-base font-semibold text-emerald-200">AiSensy drop-in — no attendance CRM code change</h3>
                     <p className="text-sm text-zinc-400">
-                      Other systems send WhatsApp messages with an integration key (header <code className="rounded bg-zinc-800 px-1 text-xs">X-Integration-Key</code>
-                      ). Keys are tied to this tenant and use the default WhatsApp connection.
+                      If your CRM already uses <code className="rounded bg-zinc-800 px-1 text-xs">AISENSY_API_URL</code> and{" "}
+                      <code className="rounded bg-zinc-800 px-1 text-xs">AISENSY_API_KEY</code>, only change these values and create
+                      matching live API campaigns in waservice. Same JSON: <code className="text-xs">campaignName</code>,{" "}
+                      <code className="text-xs">destination</code>, <code className="text-xs">templateParams</code>.
+                    </p>
+                    <div className="rounded-xl border border-zinc-600 bg-black/40 p-3 font-mono text-[11px] text-zinc-300">
+                      <p className="mb-2 font-sans text-xs font-semibold text-zinc-400">Attendance CRM .env</p>
+                      <p>AISENSY_API_URL={typeof window !== "undefined" ? window.location.origin : "https://wa.paldigital.in"}/api/v1</p>
+                      <p>AISENSY_API_KEY=wsk.&lt;id&gt;.&lt;secret&gt;</p>
+                      <p className="mt-2 font-sans text-[10px] text-zinc-500">
+                        CRM appends <code>/campaign/t1/api/v2</code> — full URL becomes{" "}
+                        <code>{API_BASE}/campaign/t1/api/v2</code>
+                      </p>
+                    </div>
+                    <p className="text-xs text-zinc-400">
+                      <strong className="text-zinc-200">campaignName</strong> in the CRM must match a{" "}
+                      <strong className="text-zinc-200">live</strong> API campaign name here, or the Meta template name (e.g.{" "}
+                      <code className="text-xs">parent_attendance_auto_in_agra</code>). Create one live campaign per template in your CRM
+                      settings.
+                    </p>
+                  </div>
+
+                  <div className={`${CARD_CLASS} space-y-3`}>
+                    <h3 className="text-base font-semibold text-zinc-100">External CRM — API campaign (Option A)</h3>
+                    <p className="text-sm text-zinc-400">
+                      Replace middleware like AiSensy: your CRM keeps its logic and calls waservice with an integration key. Each
+                      automation uses one <strong className="text-zinc-200">live API campaign</strong> (fixed template + variable slots).
+                    </p>
+                    <ol className="list-inside list-decimal space-y-2 text-sm text-zinc-300">
+                      <li>
+                        <strong className="text-zinc-100">Templates</strong> — create body with{" "}
+                        <code className="rounded bg-zinc-800 px-1 text-xs">{"{{1}}"}</code>, submit to Meta, sync when APPROVED.
+                      </li>
+                      <li>
+                        <strong className="text-zinc-100">Campaigns</strong> — type API campaign → pick template → Create →{" "}
+                        <strong className="text-zinc-100">Go Live</strong>.
+                      </li>
+                      <li>
+                        <strong className="text-zinc-100">API keys</strong> — create a key below; your CRM sends header{" "}
+                        <code className="rounded bg-zinc-800 px-1 text-xs">X-Integration-Key: wsk.&lt;id&gt;.&lt;secret&gt;</code>
+                      </li>
+                      <li>
+                        <strong className="text-zinc-100">Trigger</strong> —{" "}
+                        <code className="rounded bg-zinc-800 px-1 text-xs">POST /integrations/campaigns/&#123;campaign_id&#125;/trigger</code>{" "}
+                        with phone + <code className="rounded bg-zinc-800 px-1 text-xs">body_parameters</code> in template order.
+                      </li>
+                    </ol>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" className={BTN_SECONDARY} onClick={() => setActiveTab("templates")}>
+                        Open Templates
+                      </button>
+                      <button
+                        type="button"
+                        className={BTN_SECONDARY}
+                        onClick={() => {
+                          setCampaignLaunchType("api");
+                          setActiveTab("campaigns");
+                        }}
+                      >
+                        Open API campaigns
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-zinc-500">
+                      Base URL for your CRM: <code className="text-zinc-300">{API_BASE}</code> · Worker must be running for queued sends.
+                    </p>
+                  </div>
+
+                  <div className={`${CARD_CLASS} space-y-3`}>
+                    <h3 className="text-base font-semibold text-zinc-100">Live API campaigns — copy for your CRM</h3>
+                    {liveApiCampaigns.length === 0 ? (
+                      <p className="text-sm text-zinc-500">
+                        No live API campaigns yet. Create one under Campaigns (type API), click Go Live, then return here for the trigger
+                        snippet.
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        {liveApiCampaigns.map((campaign) => (
+                          <div key={campaign.id} className="rounded-xl border border-zinc-600 p-3">
+                            <p className="font-medium text-zinc-100">{campaign.name}</p>
+                            <ApiCampaignTriggerKit
+                              campaignId={campaign.id}
+                              campaignStatus={campaign.status}
+                              templateName={campaign.template_name}
+                              templateLanguage={campaign.template_language}
+                              templateItems={templateItems}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {apiCampaigns.some((c) => c.status !== "live") && (
+                      <p className="text-xs text-amber-200/90">
+                        Draft API campaigns exist — set them to <strong>live</strong> on the Campaigns tab before your CRM can trigger them.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className={`${CARD_CLASS} space-y-3`}>
+                    <h3 className="text-base font-semibold text-zinc-100">Other endpoints (optional)</h3>
+                    <p className="text-sm text-zinc-400">
+                      Direct template send (no campaign ID) or session text inside the 24h window:
                     </p>
                     <div className="rounded-xl border border-zinc-600 bg-zinc-800/50/80 p-3 font-mono text-[11px] leading-relaxed text-zinc-300">
-                      <p className="mb-2 font-sans text-xs font-semibold text-zinc-400">Endpoints (same base as the app)</p>
                       <p>
-                        <span className="text-emerald-700">POST</span> {API_BASE}/integrations/whatsapp/send-template
+                        <span className="text-emerald-400">POST</span> {API_BASE}/integrations/whatsapp/send-template
                       </p>
                       <p>
-                        <span className="text-emerald-700">POST</span> {API_BASE}/integrations/whatsapp/send-text
-                      </p>
-                      <p>
-                        <span className="text-emerald-700">POST</span> {API_BASE}/integrations/campaigns/&#123;campaign_id&#125;/trigger
+                        <span className="text-emerald-400">POST</span> {API_BASE}/integrations/whatsapp/send-text
                       </p>
                       <p className="mt-2 font-sans text-[10px] text-zinc-500">
-                        JSON body fields match the dashboard API (template name, language, optional body_parameters; or plain text for session messages).
+                        Option A (campaign trigger) is recommended when migrating from AiSensy-style automations.
                       </p>
                     </div>
                   </div>

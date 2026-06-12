@@ -14,16 +14,9 @@ class IntegrationAuthContext(NamedTuple):
     api_key_row: IntegrationApiKey
 
 
-def get_integration_auth(
-    x_integration_key: str | None = Header(default=None, alias="X-Integration-Key"),
-    db: Session = Depends(get_db),
-) -> IntegrationAuthContext:
-    if not x_integration_key or not x_integration_key.strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Integration-Key header",
-        )
-    parsed = parse_integration_api_key(x_integration_key.strip())
+def resolve_integration_auth(raw_key: str, db: Session) -> IntegrationAuthContext:
+    """Validate a wsk.<uuid>.<secret> integration key string."""
+    parsed = parse_integration_api_key((raw_key or "").strip())
     if not parsed:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -36,3 +29,15 @@ def get_integration_auth(
     if not verify_integration_secret(secret, row.key_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid integration key")
     return IntegrationAuthContext(tenant_id=row.tenant_id, api_key_row=row)
+
+
+def get_integration_auth(
+    x_integration_key: str | None = Header(default=None, alias="X-Integration-Key"),
+    db: Session = Depends(get_db),
+) -> IntegrationAuthContext:
+    if not x_integration_key or not x_integration_key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-Integration-Key header",
+        )
+    return resolve_integration_auth(x_integration_key, db)

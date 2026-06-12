@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.api.aisensy_compat import router as aisensy_compat_router
 from app.api.v1 import api_router
 from app.api.v1.whatsapp import webhook_router
 from app.core.config import get_settings
@@ -108,6 +109,8 @@ if settings.trusted_hosts_list:
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 app.include_router(webhook_router)
+# AiSensy drop-in: POST {host}/campaign/t1/api/v2 (same path as backend.aisensy.com)
+app.include_router(aisensy_compat_router)
 
 
 @app.exception_handler(Exception)
