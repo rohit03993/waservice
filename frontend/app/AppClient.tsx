@@ -175,6 +175,62 @@ type PlatformTenantRow = {
   meta_health: PlatformMetaHealth | null;
 };
 
+type PlatformAgentOverview = {
+  read_only: boolean;
+  tenant: {
+    id: string;
+    name: string;
+    slug: string;
+    setup_status: string;
+    created_at: string;
+  };
+  agent: {
+    email: string;
+    full_name: string | null;
+    is_active: boolean;
+  };
+  meta_health: PlatformMetaHealth | null;
+  whatsapp: {
+    connections_count: number;
+    phone_number_id: string | null;
+    connection_label: string | null;
+    waba_id: string | null;
+  };
+  metrics: {
+    contacts_total: number;
+    conversations_total: number;
+    active_service_windows: number;
+    messages_total: number;
+    messages_inbound: number;
+    messages_outbound: number;
+    messages_sent_today: number;
+    messages_received_today: number;
+    messages_by_day: Array<{ date: string | null; inbound: number; outbound: number }>;
+    templates_total: number;
+    templates_approved: number;
+    templates_pending: number;
+    templates_other: number;
+    campaigns_total: number;
+    campaigns_by_status: Record<string, number>;
+    campaign_recipients_sent: number;
+    tags_total: number;
+    integration_keys: number;
+    last_message_at: string | null;
+    last_inbound_at: string | null;
+  };
+  templates: TemplateItem[];
+  recent_conversations: ConversationItem[];
+};
+
+type MonitorMessage = {
+  id: string;
+  direction: string;
+  type: string;
+  status: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
 type MeProfile = {
   is_super_admin?: boolean;
   allow_open_registration?: boolean;
@@ -939,6 +995,7 @@ type FeedbackSlot =
   | "templateCreate"
   | "integrationPanel"
   | "platformPanel"
+  | "platformMonitor"
   | "waConnectionForm"
   | "waTemplateTest"
   | "inboxReply"
@@ -1083,7 +1140,15 @@ function ContactPreviewPanel({
   );
 }
 
-export function AppClient({ mode = "dashboard", initialSection = "contacts" }: { mode?: PageMode; initialSection?: string }) {
+export function AppClient({
+  mode = "dashboard",
+  initialSection = "contacts",
+  platformMonitorTenantId: initialPlatformMonitorTenantId = null
+}: {
+  mode?: PageMode;
+  initialSection?: string;
+  platformMonitorTenantId?: string | null;
+}) {
   const router = useRouter();
   const normalizedInitialSection: DashboardSection = (
     [
@@ -1376,6 +1441,16 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [agentActionTenantId, setAgentActionTenantId] = useState<string | null>(null);
   const [agentResetPassword, setAgentResetPassword] = useState("");
   const [agentActionLoading, setAgentActionLoading] = useState(false);
+  const [platformMonitorTenantId, setPlatformMonitorTenantId] = useState<string | null>(initialPlatformMonitorTenantId);
+  const [platformOverview, setPlatformOverview] = useState<PlatformAgentOverview | null>(null);
+  const [platformOverviewLoading, setPlatformOverviewLoading] = useState(false);
+  const [platformMonitorConversations, setPlatformMonitorConversations] = useState<ConversationItem[]>([]);
+  const [platformMonitorConversation, setPlatformMonitorConversation] = useState<ConversationItem | null>(null);
+  const [platformMonitorMessages, setPlatformMonitorMessages] = useState<MonitorMessage[]>([]);
+  const [platformMonitorMessagesLoading, setPlatformMonitorMessagesLoading] = useState(false);
+  const [platformDeleteTarget, setPlatformDeleteTarget] = useState<PlatformTenantRow | null>(null);
+  const [platformDeleteConfirmSlug, setPlatformDeleteConfirmSlug] = useState("");
+  const [platformDeleting, setPlatformDeleting] = useState(false);
 
   const agentNeedsSetup = !isSuperAdmin && tenantSetupStatus === "pending_meta";
 
@@ -2398,11 +2473,19 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       return;
     }
     if (activeTab === "platform" && isSuperAdmin) {
-      void loadPlatformData(true);
+      if (platformMonitorTenantId) {
+        void loadPlatformAgentOverview(platformMonitorTenantId, true);
+      } else {
+        void loadPlatformData(true);
+      }
       return;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, activeTab, isSuperAdmin]);
+  }, [token, activeTab, isSuperAdmin, platformMonitorTenantId]);
+
+  useEffect(() => {
+    setPlatformMonitorTenantId(initialPlatformMonitorTenantId ?? null);
+  }, [initialPlatformMonitorTenantId]);
 
   useEffect(() => {
     if (!token || activeTab !== "analytics") return;
@@ -2702,6 +2785,96 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       flash("platformPanel", (error as Error).message, "error");
     } finally {
       setAgentActionLoading(false);
+    }
+  }
+
+  async function loadPlatformAgentOverview(tenantId: string, quiet?: boolean) {
+    if (!isSuperAdmin) return;
+    setPlatformOverviewLoading(true);
+    try {
+      const [overview, conversations] = await Promise.all([
+        apiRequest<PlatformAgentOverview>(`/platform/agents/${tenantId}/overview`, { headers: authHeaders }),
+        apiRequest<{ total: number; items: ConversationItem[] }>(`/platform/agents/${tenantId}/conversations?limit=50`, {
+          headers: authHeaders
+        })
+      ]);
+      setPlatformOverview(overview);
+      setPlatformMonitorConversations(conversations.items);
+      const keep =
+        platformMonitorConversation &&
+        conversations.items.some((item) => item.conversation_id === platformMonitorConversation.conversation_id)
+          ? platformMonitorConversation
+          : conversations.items[0] ?? null;
+      setPlatformMonitorConversation(keep);
+      if (keep) {
+        await loadPlatformMonitorMessages(tenantId, keep.conversation_id, true);
+      } else {
+        setPlatformMonitorMessages([]);
+      }
+      if (!quiet) flash("platformMonitor", "Agent workspace snapshot refreshed.", "success");
+    } catch (error) {
+      if (!quiet) flash("platformMonitor", (error as Error).message, "error");
+    } finally {
+      setPlatformOverviewLoading(false);
+    }
+  }
+
+  async function loadPlatformMonitorMessages(tenantId: string, conversationId: string, quiet?: boolean) {
+    setPlatformMonitorMessagesLoading(true);
+    try {
+      const data = await apiRequest<MonitorMessage[]>(
+        `/platform/agents/${tenantId}/conversations/${conversationId}/messages`,
+        { headers: authHeaders }
+      );
+      setPlatformMonitorMessages(data);
+      if (!quiet) flash("platformMonitor", "Conversation thread loaded.", "success");
+    } catch (error) {
+      if (!quiet) flash("platformMonitor", (error as Error).message, "error");
+    } finally {
+      setPlatformMonitorMessagesLoading(false);
+    }
+  }
+
+  function openPlatformMonitor(tenantId: string) {
+    setPlatformMonitorTenantId(tenantId);
+    router.push(`/dashboard/platform/${tenantId}`);
+  }
+
+  function closePlatformMonitor() {
+    setPlatformMonitorTenantId(null);
+    setPlatformOverview(null);
+    setPlatformMonitorConversations([]);
+    setPlatformMonitorConversation(null);
+    setPlatformMonitorMessages([]);
+    router.push("/dashboard/platform");
+  }
+
+  async function submitPlatformDelete() {
+    if (!platformDeleteTarget) return;
+    if (platformDeleteConfirmSlug.trim().toLowerCase() !== platformDeleteTarget.tenant_slug.trim().toLowerCase()) {
+      flash("platformPanel", "Type the exact workspace ID to confirm deletion.", "error");
+      return;
+    }
+    setPlatformDeleting(true);
+    const deletedId = platformDeleteTarget.tenant_id;
+    const deletedName = platformDeleteTarget.tenant_name;
+    try {
+      await apiRequest(`/platform/agents/${deletedId}`, {
+        method: "DELETE",
+        headers: authHeaders,
+        body: JSON.stringify({ confirm_slug: platformDeleteConfirmSlug.trim() })
+      });
+      setPlatformDeleteTarget(null);
+      setPlatformDeleteConfirmSlug("");
+      if (platformMonitorTenantId === deletedId) {
+        closePlatformMonitor();
+      }
+      flash("platformPanel", `Deleted workspace “${deletedName}” and all associated data.`, "success");
+      await loadPlatformData(true);
+    } catch (error) {
+      flash("platformPanel", (error as Error).message, "error");
+    } finally {
+      setPlatformDeleting(false);
     }
   }
 
@@ -5453,11 +5626,290 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
               )}
               {activeTab === "platform" && isSuperAdmin && (
                 <section className="space-y-4">
+                  {platformMonitorTenantId ? (
+                    <>
+                      <div className={`${CARD_CLASS} flex flex-wrap items-start justify-between gap-3`}>
+                        <div className="space-y-2">
+                          <button
+                            type="button"
+                            className="text-xs font-semibold text-crm-accent hover:underline"
+                            onClick={closePlatformMonitor}
+                          >
+                            ← Back to agent accounts
+                          </button>
+                          <div>
+                            <h3 className="text-base font-semibold text-zinc-100">
+                              {platformOverview?.tenant.name ?? "Agent workspace"}
+                            </h3>
+                            <p className="text-sm text-zinc-400">
+                              {platformOverview?.agent.email ?? "—"}
+                              {platformOverview?.tenant.slug ? (
+                                <span className="text-zinc-600"> · {platformOverview.tenant.slug}</span>
+                              ) : null}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className={`${BTN_SECONDARY} !min-h-0 py-2 text-xs`}
+                          disabled={platformOverviewLoading}
+                          onClick={() => void loadPlatformAgentOverview(platformMonitorTenantId)}
+                        >
+                          {platformOverviewLoading ? (
+                            <>
+                              <Spinner className="h-3.5 w-3.5" /> Refreshing…
+                            </>
+                          ) : (
+                            "Refresh snapshot"
+                          )}
+                        </button>
+                      </div>
+                      <div className="rounded-2xl border border-sky-500/40 bg-sky-950/30 px-4 py-3 text-sm text-sky-100">
+                        <p className="font-semibold">Read-only client monitor</p>
+                        <p className="mt-1 text-sky-200/90">
+                          Super-admin view for service delivery. You can inspect chats and metrics but cannot send messages from
+                          this screen.
+                        </p>
+                      </div>
+                      <InlineFeedbackText feedback={inlineFeedback.platformMonitor} />
+                      {platformOverviewLoading && !platformOverview ? (
+                        <div className={`${CARD_CLASS} py-12 text-center text-sm text-zinc-500`}>Loading workspace snapshot…</div>
+                      ) : platformOverview ? (
+                        <>
+                          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
+                            <div className={CARD_CLASS}>
+                              <p className="text-xs text-zinc-500">Active chats (24h)</p>
+                              <p className="mt-1 text-2xl font-semibold tabular-nums text-lime-400">
+                                {platformOverview.metrics.active_service_windows}
+                              </p>
+                            </div>
+                            <div className={CARD_CLASS}>
+                              <p className="text-xs text-zinc-500">Conversations</p>
+                              <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
+                                {platformOverview.metrics.conversations_total}
+                              </p>
+                            </div>
+                            <div className={CARD_CLASS}>
+                              <p className="text-xs text-zinc-500">Contacts</p>
+                              <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
+                                {platformOverview.metrics.contacts_total}
+                              </p>
+                            </div>
+                            <div className={CARD_CLASS}>
+                              <p className="text-xs text-zinc-500">Sent today</p>
+                              <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
+                                {platformOverview.metrics.messages_sent_today}
+                              </p>
+                            </div>
+                            <div className={CARD_CLASS}>
+                              <p className="text-xs text-zinc-500">Received today</p>
+                              <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
+                                {platformOverview.metrics.messages_received_today}
+                              </p>
+                            </div>
+                            <div className={CARD_CLASS}>
+                              <p className="text-xs text-zinc-500">Templates approved</p>
+                              <p className="mt-1 text-2xl font-semibold tabular-nums text-emerald-400">
+                                {platformOverview.metrics.templates_approved}
+                                <span className="text-sm font-normal text-zinc-500">
+                                  /{platformOverview.metrics.templates_total}
+                                </span>
+                              </p>
+                            </div>
+                          </div>
+                          <div className="grid gap-3 lg:grid-cols-3">
+                            <div className={`${CARD_CLASS} space-y-2 lg:col-span-1`}>
+                              <h4 className="text-sm font-semibold text-zinc-100">Account health</h4>
+                              <p className="text-xs text-zinc-500">
+                                Setup:{" "}
+                                <span className="text-zinc-300">
+                                  {platformOverview.tenant.setup_status === "active" ? "Active CRM" : "Pending Meta"}
+                                </span>
+                              </p>
+                              <p className="text-xs text-zinc-500">
+                                Agent login:{" "}
+                                <span className={platformOverview.agent.is_active ? "text-lime-400" : "text-zinc-400"}>
+                                  {platformOverview.agent.is_active ? "Enabled" : "Disabled"}
+                                </span>
+                              </p>
+                              {platformOverview.meta_health && (
+                                <p className="text-xs text-zinc-500">
+                                  Meta:{" "}
+                                  <span className="text-zinc-300">{platformOverview.meta_health.overall}</span>
+                                  {platformOverview.meta_health.token_alert_message ? (
+                                    <span className="mt-1 block text-rose-300/90">
+                                      {platformOverview.meta_health.token_alert_message}
+                                    </span>
+                                  ) : null}
+                                </p>
+                              )}
+                              {platformOverview.whatsapp.phone_number_id && (
+                                <p className="font-mono text-[10px] text-zinc-500">
+                                  {platformOverview.whatsapp.connection_label}: {platformOverview.whatsapp.phone_number_id}
+                                </p>
+                              )}
+                              <p className="text-xs text-zinc-500">
+                                Last message:{" "}
+                                <span className="text-zinc-300">
+                                  {platformOverview.metrics.last_message_at
+                                    ? new Date(platformOverview.metrics.last_message_at).toLocaleString()
+                                    : "—"}
+                                </span>
+                              </p>
+                            </div>
+                            <div className={`${CARD_CLASS} space-y-2 lg:col-span-1`}>
+                              <h4 className="text-sm font-semibold text-zinc-100">Messaging totals</h4>
+                              <p className="text-sm text-zinc-400">
+                                <span className="font-semibold text-zinc-200">{platformOverview.metrics.messages_total}</span> total
+                                · {platformOverview.metrics.messages_outbound} sent · {platformOverview.metrics.messages_inbound}{" "}
+                                received
+                              </p>
+                              <p className="text-sm text-zinc-400">
+                                Campaigns: {platformOverview.metrics.campaigns_total} · recipients sent:{" "}
+                                {platformOverview.metrics.campaign_recipients_sent}
+                              </p>
+                              <p className="text-sm text-zinc-400">
+                                Tags: {platformOverview.metrics.tags_total} · API keys:{" "}
+                                {platformOverview.metrics.integration_keys}
+                              </p>
+                            </div>
+                            <div className={`${CARD_CLASS} space-y-2 lg:col-span-1`}>
+                              <h4 className="text-sm font-semibold text-zinc-100">Last 14 days</h4>
+                              <div className="max-h-40 space-y-1 overflow-y-auto text-xs">
+                                {platformOverview.metrics.messages_by_day.length === 0 ? (
+                                  <p className="text-zinc-500">No messages in this period.</p>
+                                ) : (
+                                  platformOverview.metrics.messages_by_day.map((row) => (
+                                    <div key={row.date ?? "unknown"} className="flex justify-between gap-2 text-zinc-400">
+                                      <span>{row.date}</span>
+                                      <span className="tabular-nums">
+                                        ↑{row.inbound} · ↓{row.outbound}
+                                      </span>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className={`${CARD_CLASS} space-y-3`}>
+                            <h4 className="text-sm font-semibold text-zinc-100">Template library</h4>
+                            {platformOverview.templates.length === 0 ? (
+                              <p className="text-sm text-zinc-500">No templates synced yet.</p>
+                            ) : (
+                              <div className="overflow-x-auto">
+                                <table className="min-w-full text-left text-xs">
+                                  <thead>
+                                    <tr className="border-b border-zinc-700 text-zinc-500">
+                                      <th className="px-2 py-1.5 font-semibold">Name</th>
+                                      <th className="px-2 py-1.5 font-semibold">Language</th>
+                                      <th className="px-2 py-1.5 font-semibold">Status</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {platformOverview.templates.map((tpl) => (
+                                      <tr key={tpl.id} className="border-b border-zinc-800/80">
+                                        <td className="px-2 py-2 text-zinc-200">{tpl.name}</td>
+                                        <td className="px-2 py-2 text-zinc-400">{tpl.language}</td>
+                                        <td className="px-2 py-2">
+                                          <span
+                                            className={`rounded-full px-2 py-0.5 font-semibold ${
+                                              (tpl.status || "").toUpperCase() === "APPROVED"
+                                                ? "bg-lime-500/20 text-lime-400"
+                                                : "bg-amber-500/20 text-amber-300"
+                                            }`}
+                                          >
+                                            {tpl.status || "unknown"}
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                          <div className="grid gap-4 lg:grid-cols-2">
+                            <div className={`${CARD_CLASS} space-y-2`}>
+                              <h4 className="text-sm font-semibold text-zinc-100">Inbox (read-only)</h4>
+                              <div className="max-h-80 space-y-2 overflow-y-auto">
+                                {platformMonitorConversations.map((item) => (
+                                  <button
+                                    key={item.conversation_id}
+                                    type="button"
+                                    onClick={() => {
+                                      setPlatformMonitorConversation(item);
+                                      void loadPlatformMonitorMessages(platformMonitorTenantId, item.conversation_id, true);
+                                    }}
+                                    className={`w-full rounded-xl border px-3 py-2 text-left transition ${
+                                      platformMonitorConversation?.conversation_id === item.conversation_id
+                                        ? "border-crm-accent bg-crm-accent/10"
+                                        : "border-zinc-700 bg-zinc-900/40 hover:border-zinc-500"
+                                    }`}
+                                  >
+                                    <p className="font-medium text-zinc-100">{item.contact_name || "Unnamed"}</p>
+                                    <p className="text-xs text-zinc-500">{item.phone_e164}</p>
+                                    {item.messaging_window && (
+                                      <span className={`mt-1 inline-block ${windowBadgeClass(item.messaging_window)}`}>
+                                        {windowBadgeLabel(item.messaging_window)}
+                                      </span>
+                                    )}
+                                  </button>
+                                ))}
+                                {platformMonitorConversations.length === 0 && (
+                                  <p className="text-sm text-zinc-500">No conversations yet.</p>
+                                )}
+                              </div>
+                            </div>
+                            <div className={`${CARD_CLASS} space-y-3`}>
+                              <h4 className="text-sm font-semibold text-zinc-100">Conversation thread</h4>
+                              {platformMonitorConversation?.messaging_window && (
+                                <p className="text-xs text-zinc-500">
+                                  {platformMonitorConversation.messaging_window.session_hint}
+                                </p>
+                              )}
+                              <div className="max-h-80 space-y-2 overflow-y-auto rounded-xl border border-zinc-600 p-3">
+                                {platformMonitorMessagesLoading ? (
+                                  <p className="text-sm text-zinc-500">Loading messages…</p>
+                                ) : (
+                                  platformMonitorMessages.map((msg) => {
+                                    const display = getMessageDisplayText(msg.payload, msg.type);
+                                    return (
+                                      <div
+                                        key={msg.id}
+                                        className={`max-w-[90%] rounded-xl px-3 py-2 text-sm ${
+                                          msg.direction === "outbound"
+                                            ? "ml-auto bg-crm-accent text-black"
+                                            : "bg-zinc-800 text-zinc-200"
+                                        }`}
+                                      >
+                                        <div className="text-[15px]">{formatWhatsAppRichText(display, msg.direction === "outbound" ? "outbound" : "inbound")}</div>
+                                        <p
+                                          className={`mt-1 text-[10px] ${
+                                            msg.direction === "outbound" ? "text-black/60" : "text-zinc-500"
+                                          }`}
+                                        >
+                                          {new Date(msg.created_at).toLocaleString()} · {msg.status}
+                                        </p>
+                                      </div>
+                                    );
+                                  })
+                                )}
+                                {!platformMonitorMessagesLoading && platformMonitorMessages.length === 0 && (
+                                  <p className="text-sm text-zinc-500">Select a conversation to view messages.</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
                   <div className={`${CARD_CLASS} flex flex-wrap items-center justify-between gap-3`}>
                     <div>
                       <h3 className="text-base font-semibold text-zinc-100">Agent accounts</h3>
                       <p className="text-sm text-zinc-400">
-                        Create agent workspaces. Agents complete WhatsApp Settings to activate their CRM.
+                        Create agent workspaces. Click a row to monitor usage. Agents complete WhatsApp Settings to activate their CRM.
                       </p>
                     </div>
                     <button
@@ -5638,12 +6090,29 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                             return (
                               <tr key={row.tenant_id} className="border-b border-zinc-800/80 align-top">
                                 <td className="px-3 py-3">
-                                  <p className="font-medium text-zinc-100">{row.tenant_name}</p>
-                                  <p className="text-xs text-zinc-500">{row.tenant_slug}</p>
+                                  <button
+                                    type="button"
+                                    className="text-left hover:opacity-90"
+                                    onClick={() => openPlatformMonitor(row.tenant_id)}
+                                  >
+                                    <p className="font-medium text-crm-accent hover:underline">{row.tenant_name}</p>
+                                    <p className="text-xs text-zinc-500">{row.tenant_slug}</p>
+                                    <p className="mt-1 text-[10px] text-zinc-600">
+                                      {row.contact_count} contacts · {row.message_count} messages
+                                    </p>
+                                  </button>
                                 </td>
                                 <td className="px-3 py-3 text-xs text-zinc-400">
-                                  <p className="text-zinc-300">{row.agent_email || row.users[0]?.email || "—"}</p>
-                                  {row.agent_full_name && <p className="text-zinc-500">{row.agent_full_name}</p>}
+                                  <button
+                                    type="button"
+                                    className="text-left hover:opacity-90"
+                                    onClick={() => openPlatformMonitor(row.tenant_id)}
+                                  >
+                                    <p className="text-zinc-300 hover:text-crm-accent hover:underline">
+                                      {row.agent_email || row.users[0]?.email || "—"}
+                                    </p>
+                                    {row.agent_full_name && <p className="text-zinc-500">{row.agent_full_name}</p>}
+                                  </button>
                                 </td>
                                 <td className="px-3 py-3">
                                   <div className="flex flex-wrap gap-1">
@@ -5709,6 +6178,17 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                                     >
                                       Reset password
                                     </button>
+                                    <button
+                                      type="button"
+                                      className={`${BTN_ROW} border border-rose-500/50 text-rose-300 hover:bg-rose-950/50`}
+                                      disabled={agentActionLoading || platformDeleting}
+                                      onClick={() => {
+                                        setPlatformDeleteTarget(row);
+                                        setPlatformDeleteConfirmSlug("");
+                                      }}
+                                    >
+                                      Delete account
+                                    </button>
                                   </div>
                                   {agentActionTenantId === row.tenant_id && (
                                     <div className="mt-2 space-y-2 text-left">
@@ -5756,6 +6236,53 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                       </tbody>
                     </table>
                   </div>
+                    </>
+                  )}
+                  {platformDeleteTarget && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+                      <div className={`${CARD_CLASS} w-full max-w-md space-y-4`}>
+                        <h3 className="text-base font-semibold text-rose-300">Delete agent account permanently?</h3>
+                        <p className="text-sm text-zinc-400">
+                          This removes workspace <span className="font-medium text-zinc-200">{platformDeleteTarget.tenant_name}</span>,
+                          the agent login, and all CRM data (contacts, messages, templates, campaigns, WhatsApp connections).
+                          This cannot be undone.
+                        </p>
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-500">
+                            Type <span className="font-mono text-zinc-300">{platformDeleteTarget.tenant_slug}</span> to confirm
+                          </label>
+                          <input
+                            className={INPUT_CLASS}
+                            value={platformDeleteConfirmSlug}
+                            onChange={(e) => setPlatformDeleteConfirmSlug(e.target.value)}
+                            placeholder={platformDeleteTarget.tenant_slug}
+                            autoComplete="off"
+                          />
+                        </div>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <button
+                            type="button"
+                            className={BTN_SECONDARY}
+                            disabled={platformDeleting}
+                            onClick={() => {
+                              setPlatformDeleteTarget(null);
+                              setPlatformDeleteConfirmSlug("");
+                            }}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className={`${BTN_ROW} border border-rose-500 bg-rose-600 text-white hover:bg-rose-500`}
+                            disabled={platformDeleting}
+                            onClick={() => void submitPlatformDelete()}
+                          >
+                            {platformDeleting ? "Deleting…" : "Delete workspace and data"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </section>
               )}
               {activeTab === "platform" && !isSuperAdmin && (

@@ -20,8 +20,16 @@ from app.schemas.platform import (
     AgentActionResponse,
     CreateAgentRequest,
     CreateAgentResponse,
+    DeleteAgentRequest,
+    DeleteAgentResponse,
     ResetAgentPasswordRequest,
     UpdateAgentRequest,
+)
+from app.services.platform_agent_monitoring import (
+    build_agent_overview,
+    delete_agent_workspace,
+    list_agent_conversation_messages,
+    list_agent_conversations,
 )
 from app.services.tenant_setup import SETUP_ACTIVE, SETUP_PENDING
 from app.services.whatsapp_connection_health import evaluate_whatsapp_connection
@@ -187,6 +195,62 @@ def update_agent_status(
         agent_email=agent.email,
         agent_is_active=agent.is_active,
         detail=detail,
+    )
+
+
+@router.get("/agents/{tenant_id}/overview")
+async def get_agent_overview(
+    tenant_id: UUID,
+    _: User = Depends(get_super_admin_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    tenant, agent = _resolve_agent_workspace(db, tenant_id)
+    return await build_agent_overview(db, tenant, agent)
+
+
+@router.get("/agents/{tenant_id}/conversations")
+def get_agent_conversations(
+    tenant_id: UUID,
+    _: User = Depends(get_super_admin_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    _resolve_agent_workspace(db, tenant_id)
+    return list_agent_conversations(db, tenant_id, limit=limit, offset=offset)
+
+
+@router.get("/agents/{tenant_id}/conversations/{conversation_id}/messages")
+def get_agent_conversation_messages(
+    tenant_id: UUID,
+    conversation_id: UUID,
+    _: User = Depends(get_super_admin_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[dict]:
+    _resolve_agent_workspace(db, tenant_id)
+    return list_agent_conversation_messages(db, tenant_id, conversation_id, limit=limit)
+
+
+@router.delete("/agents/{tenant_id}", response_model=DeleteAgentResponse)
+def delete_agent(
+    tenant_id: UUID,
+    payload: DeleteAgentRequest,
+    _: User = Depends(get_super_admin_user),
+    db: Session = Depends(get_db),
+) -> DeleteAgentResponse:
+    tenant, agent = _resolve_agent_workspace(db, tenant_id)
+    if payload.confirm_slug.strip().lower() != tenant.slug.strip().lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Confirmation slug does not match this workspace. Type the exact workspace ID to delete.",
+        )
+    result = delete_agent_workspace(db, tenant)
+    return DeleteAgentResponse(
+        tenant_id=str(tenant_id),
+        tenant_slug=result["tenant_slug"],
+        deleted_user_emails=result["deleted_user_emails"],
+        detail=f"Deleted workspace “{result['tenant_name']}” and all associated data.",
     )
 
 

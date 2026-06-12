@@ -31,3 +31,16 @@ class AgentActionResponse(BaseModel):
     agent_email: str
     agent_is_active: bool
     detail: str
+
+
+class DeleteAgentRequest(BaseModel):
+    """Type the workspace slug to confirm permanent deletion."""
+
+    confirm_slug: str = Field(min_length=2, max_length=120)
+
+
+class DeleteAgentResponse(BaseModel):
+    tenant_id: str
+    tenant_slug: str
+    deleted_user_emails: list[str]
+    detail: str
