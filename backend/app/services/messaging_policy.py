@@ -106,6 +106,34 @@ def template_variables_from_stored(stored: list | None) -> list[dict[str, str]] 
     return [item for item in stored if isinstance(item, dict)]
 
 
+def align_stored_template_parameters(
+    stored: list | None,
+    var_keys: list[str],
+) -> list[dict[str, str]] | None:
+    """
+    Map CRM positional values (templateParams / body_parameters without names) onto
+    the template's variable keys. Required for Meta named-parameter templates.
+    """
+    items = template_variables_from_stored(stored)
+    if not items:
+        return None
+    if any(str(item.get("parameter_name") or "").strip() for item in items):
+        return items
+    if not var_keys:
+        return items
+    out: list[dict[str, str]] = []
+    for i, item in enumerate(items):
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        row: dict[str, str] = {"type": "text", "text": text}
+        key = var_keys[i] if i < len(var_keys) else None
+        if key and not str(key).isdigit():
+            row["parameter_name"] = str(key)
+        out.append(row)
+    return out or None
+
+
 def csv_row_template_overrides(
     body_variable_keys: list[str],
     row: dict[str, str],

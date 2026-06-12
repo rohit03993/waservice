@@ -15,7 +15,10 @@ from app.models.message import Message
 from app.models.message_template import MessageTemplate
 from app.services.campaign_dispatch import queue_due_scheduled_campaigns
 from app.services.connection_resolver import resolve_active_connection
-from app.services.messaging_policy import build_template_body_parameters, template_variables_from_stored
+from app.services.messaging_policy import (
+    align_stored_template_parameters,
+    build_template_body_parameters,
+)
 from app.services.meta_errors import format_meta_error
 from app.services.outbound_whatsapp import send_whatsapp_template_message
 from app.services.queue import enqueue_campaign_job_with_delay, move_due_delayed_jobs, pop_campaign_job
@@ -89,7 +92,7 @@ def process_job(job: dict) -> None:
         db.commit()
 
         var_keys = body_template_variables(tmpl_row.components)
-        stored = template_variables_from_stored(recipient.template_variables)
+        stored = align_stored_template_parameters(recipient.template_variables, var_keys)
         raw_params = stored if stored else build_template_body_parameters(var_keys, contact_name=contact.name)
         from app.schemas.whatsapp import TemplateSendBodyParameter
 
