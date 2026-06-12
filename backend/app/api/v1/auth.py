@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.config import get_settings
+from app.core.super_admin import is_super_admin_email
 from app.core.rate_limit import check_rate_limit
 from app.core.security import create_access_token, hash_password, verify_password
 from app.db.session import get_db
@@ -22,6 +23,7 @@ from app.schemas.auth import (
     RegisterRequest,
     TokenResponse,
     UserProfile,
+    AuthPublicConfigResponse,
 )
 from app.services.phone_otp import (
     generate_six_digit_code,
@@ -48,6 +50,12 @@ def _timing_safe_login_hash(existing: str | None) -> str:
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.get("/public-config", response_model=AuthPublicConfigResponse)
+def auth_public_config() -> AuthPublicConfigResponse:
+    settings = get_settings()
+    return AuthPublicConfigResponse(allow_open_registration=settings.allow_open_registration)
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -288,7 +296,10 @@ def me(current_user: User = Depends(get_current_user), db: Session = Depends(get
                 tenant_name=tenant.name,
                 tenant_slug=tenant.slug,
                 role=membership.role,
+                setup_status=tenant.setup_status,
             )
             for membership, tenant in memberships
         ],
+        is_super_admin=is_super_admin_email(current_user.email),
+        allow_open_registration=get_settings().allow_open_registration,
     )

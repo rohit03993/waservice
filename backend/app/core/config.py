@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # Local cache for WhatsApp media (survives Meta media URL expiry for inbox viewing).
     media_cache_dir: str = "/app/media_cache"
 
+    # Comma-separated emails with platform super-admin access (all tenants + Meta status).
+    super_admin_emails: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         value = (self.cors_origins or "").strip()

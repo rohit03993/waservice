@@ -82,8 +82,15 @@ class MembershipInfo(BaseModel):
     tenant_name: str
     tenant_slug: str
     role: str
+    setup_status: str = "pending_meta"
 
 
 class MeResponse(BaseModel):
     user: UserProfile
     memberships: list[MembershipInfo]
+    is_super_admin: bool = False
+    allow_open_registration: bool = True
+
+
+class AuthPublicConfigResponse(BaseModel):
+    allow_open_registration: bool

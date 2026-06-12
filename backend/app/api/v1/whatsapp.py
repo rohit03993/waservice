@@ -10,7 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session, joinedload
 
-from app.api.deps import get_admin_membership, get_admin_or_agent_membership
+from app.api.deps import get_admin_membership, get_admin_membership_setup_allowed, get_admin_or_agent_membership
 from app.core.phone import normalize_phone_e164
 from app.core.rate_limit import check_rate_limit
 from app.core.secrets import decrypt_secret, encrypt_secret
@@ -47,6 +47,8 @@ from app.services.meta_errors import format_meta_error
 from app.services.external_crm_webhook import deliver_external_crm_webhook, external_crm_webhook_configured
 from app.services.media_cache import prefetch_message_media_sync, read_cached_media, write_cached_media
 from app.services.template_preview import body_template_variables, build_template_preview_from_stored
+from app.services.tenant_setup import try_activate_tenant_after_meta
+from app.services.whatsapp_connection_health import evaluate_whatsapp_connection
 from app.utils.whatsapp_media import extract_waba_media_id, is_media_message_type
 
 _logger = logging.getLogger("uvicorn.error")
@@ -388,7 +390,7 @@ def _connection_to_response(connection: WhatsAppConnection) -> WhatsAppConnectio
 
 @router.get("/connection", response_model=WhatsAppConnectionResponse | None)
 def get_connection(
-    membership: Membership = Depends(get_admin_membership),
+    membership: Membership = Depends(get_admin_membership_setup_allowed),
     db: Session = Depends(get_db),
 ) -> WhatsAppConnectionResponse | None:
     connection = (
@@ -404,7 +406,7 @@ def get_connection(
 
 @router.get("/connections", response_model=list[WhatsAppConnectionResponse])
 def list_connections(
-    membership: Membership = Depends(get_admin_membership),
+    membership: Membership = Depends(get_admin_membership_setup_allowed),
     db: Session = Depends(get_db),
 ) -> list[WhatsAppConnectionResponse]:
     rows = (
@@ -420,7 +422,7 @@ def list_connections(
 async def connection_health(
     request: Request,
     connection_id: str | None = Query(default=None),
-    membership: Membership = Depends(get_admin_membership),
+    membership: Membership = Depends(get_admin_membership_setup_allowed),
     db: Session = Depends(get_db),
 ) -> dict:
     client_ip = request.client.host if request.client else "unknown"
@@ -435,69 +437,15 @@ async def connection_health(
             base_query.order_by(WhatsAppConnection.is_default.desc(), WhatsAppConnection.created_at.asc()).first()
         )
 
-    if not connection:
-        return {
-            "overall": "disconnected",
-            "connection_configured": False,
-            "waba_configured": False,
-            "verify_token_configured": False,
-            "app_secret_configured": False,
-            "token_valid": False,
-            "token_error": None,
-            "webhook_ready": False,
-            "connection_active": False,
-            "hints": ["Save a WhatsApp connection in Settings."],
-        }
-
-    waba_ok = bool(connection.waba_id and str(connection.waba_id).strip())
-    verify_ok = bool(_plain_verify_token(connection.verify_token))
-    secret_ok = bool(connection.app_secret)
-    token_plain = decrypt_secret(connection.access_token) or ""
-
-    token_ok = False
-    token_error: str | None = None
-    if token_plain:
-        token_ok, token_error = await MetaClient.verify_phone_number_access(
-            phone_number_id=connection.phone_number_id,
-            access_token=token_plain,
-        )
-    else:
-        token_error = "Access token missing"
-
-    webhook_ready = verify_ok and secret_ok
-    hints: list[str] = []
-    if not token_ok:
-        hints.append("Meta access token is missing, expired, or not allowed for this phone number. Paste a fresh token and save.")
-    if not waba_ok:
-        hints.append("Add WABA ID to enable template sync from Meta.")
-    if not webhook_ready:
-        hints.append("Set verify token and app secret so inbound webhooks are verified securely.")
-    if not connection.is_active:
-        hints.append("Connection is inactive; enable it or pick another default.")
-
-    if not connection.is_active or not token_ok or not waba_ok or not webhook_ready:
-        overall = "attention"
-    else:
-        overall = "healthy"
-
-    return {
-        "overall": overall,
-        "connection_configured": True,
-        "waba_configured": waba_ok,
-        "verify_token_configured": verify_ok,
-        "app_secret_configured": secret_ok,
-        "token_valid": token_ok,
-        "token_error": token_error[:500] if token_error else None,
-        "webhook_ready": webhook_ready,
-        "connection_active": connection.is_active,
-        "hints": hints,
-    }
+    result = await evaluate_whatsapp_connection(connection)
+    await try_activate_tenant_after_meta(db, membership.tenant_id)
+    return result
 
 
 @router.put("/connection", response_model=WhatsAppConnectionResponse)
-def upsert_connection(
+async def upsert_connection(
     payload: WhatsAppConnectionUpsertRequest,
-    membership: Membership = Depends(get_admin_membership),
+    membership: Membership = Depends(get_admin_membership_setup_allowed),
     db: Session = Depends(get_db),
 ) -> WhatsAppConnectionResponse:
     normalized_access_token = (payload.access_token or "").strip()
@@ -570,6 +518,7 @@ def upsert_connection(
         },
     )
     db.commit()
+    await try_activate_tenant_after_meta(db, membership.tenant_id)
     return _connection_to_response(connection)
 
 

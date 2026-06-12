@@ -21,7 +21,7 @@ Implementation history: `PLAN.md`. Roadmap: **[docs/WHATS_NEXT.md](docs/WHATS_NE
    docker compose up --build
    ```
 
-3. Open **http://localhost:3010** → **Register** (there is no default login).
+3. Open **http://localhost:3010** → sign in (or register if `ALLOW_OPEN_REGISTRATION=true`).
 4. Follow the **Get started** banner → **WhatsApp Settings**.
 5. API docs: **http://localhost:8010/docs**
 
@@ -29,7 +29,9 @@ Migrations run on backend startup. Optional: `docker compose exec backend alembi
 
 ## Login
 
-- **No preset username/password.** Use the email + password you chose at registration.
+- **Super admin** (`SUPER_ADMIN_EMAILS` in `.env`): Platform dashboard — create agent accounts.
+- **Agents**: Sign in with credentials from super admin; complete **WhatsApp Settings** to activate the workspace.
+- With `ALLOW_OPEN_REGISTRATION=false` (default), public signup is disabled.
 - Minimum password length: **8 characters**.
 
 ## External CRM (live, safe)

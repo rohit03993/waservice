@@ -147,7 +147,56 @@ type TagPerformanceResponse = {
   tags: TagPerformanceRow[];
 };
 
-type DashboardSection = "contacts" | "campaigns" | "templates" | "inbox" | "settings" | "analytics" | "automations" | "integrations";
+type PlatformMetaHealth = {
+  overall: string;
+  token_valid: boolean;
+  token_error: string | null;
+  token_alert?: string | null;
+  token_alert_message?: string | null;
+  connection_active: boolean;
+  phone_number_id?: string;
+  connection_label?: string;
+  hints: string[];
+};
+
+type PlatformTenantRow = {
+  tenant_id: string;
+  tenant_name: string;
+  tenant_slug: string;
+  setup_status: string;
+  agent_email: string | null;
+  agent_full_name: string | null;
+  agent_is_active: boolean | null;
+  created_at: string;
+  users: Array<{ email: string; full_name: string | null; role: string; is_active: boolean }>;
+  contact_count: number;
+  message_count: number;
+  whatsapp_connections: number;
+  meta_health: PlatformMetaHealth | null;
+};
+
+type MeProfile = {
+  is_super_admin?: boolean;
+  allow_open_registration?: boolean;
+  memberships?: Array<{ setup_status?: string }>;
+};
+
+function dashboardLandingSection(me: MeProfile): DashboardSection {
+  if (me.is_super_admin) return "platform";
+  if (me.memberships?.[0]?.setup_status === "pending_meta") return "settings";
+  return "contacts";
+}
+
+type DashboardSection =
+  | "contacts"
+  | "campaigns"
+  | "templates"
+  | "inbox"
+  | "settings"
+  | "analytics"
+  | "automations"
+  | "integrations"
+  | "platform";
 type PageMode = "root" | "auth" | "dashboard";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api/v1";
@@ -218,6 +267,17 @@ function deriveWorkspaceFromEmail(emailRaw: string): { name: string; slug: strin
       : "My workspace";
 
   return { name, slug };
+}
+
+/** Workspace ID from company / workspace name (e.g. "Acme Sales" → "acme-sales"). */
+function slugifyWorkspaceName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 120);
 }
 
 /** WABA costs in INR; Meta bucket timestamps interpreted in IST for display (avoids UTC midnight looking “wrong”). */
@@ -878,6 +938,7 @@ type FeedbackSlot =
   | "templatesToolbar"
   | "templateCreate"
   | "integrationPanel"
+  | "platformPanel"
   | "waConnectionForm"
   | "waTemplateTest"
   | "inboxReply"
@@ -1025,7 +1086,17 @@ function ContactPreviewPanel({
 export function AppClient({ mode = "dashboard", initialSection = "contacts" }: { mode?: PageMode; initialSection?: string }) {
   const router = useRouter();
   const normalizedInitialSection: DashboardSection = (
-    ["contacts", "campaigns", "templates", "inbox", "settings", "analytics", "automations", "integrations"].includes(initialSection)
+    [
+      "contacts",
+      "campaigns",
+      "templates",
+      "inbox",
+      "settings",
+      "analytics",
+      "automations",
+      "integrations",
+      "platform"
+    ].includes(initialSection)
       ? initialSection
       : "contacts"
   ) as DashboardSection;
@@ -1214,6 +1285,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     overall: string;
     hints: string[];
     token_valid: boolean;
+    token_alert?: string | null;
+    token_alert_message?: string | null;
+    token_error?: string | null;
     waba_configured: boolean;
     webhook_ready: boolean;
     connection_configured: boolean;
@@ -1278,6 +1352,32 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
   const [tagPerfLoading, setTagPerfLoading] = useState(false);
   const [tagPerfDays, setTagPerfDays] = useState<0 | 7 | 30>(30);
   const [tagPerfData, setTagPerfData] = useState<TagPerformanceResponse | null>(null);
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [tenantSetupStatus, setTenantSetupStatus] = useState<string>("active");
+  const [allowOpenRegistration, setAllowOpenRegistration] = useState(true);
+  const [platformSummary, setPlatformSummary] = useState<{
+    agents_total: number;
+    agents_active: number;
+    agents_pending_meta: number;
+    agents_disabled: number;
+    agents_token_attention: number;
+    users: number;
+    whatsapp_connections: number;
+  } | null>(null);
+  const [platformTenants, setPlatformTenants] = useState<PlatformTenantRow[]>([]);
+  const [platformLoading, setPlatformLoading] = useState(false);
+  const [newAgentEmail, setNewAgentEmail] = useState("");
+  const [newAgentPassword, setNewAgentPassword] = useState("");
+  const [newAgentFullName, setNewAgentFullName] = useState("");
+  const [newAgentTenantName, setNewAgentTenantName] = useState("");
+  const [newAgentTenantSlug, setNewAgentTenantSlug] = useState("");
+  const [newAgentSlugManual, setNewAgentSlugManual] = useState(false);
+  const [creatingAgent, setCreatingAgent] = useState(false);
+  const [agentActionTenantId, setAgentActionTenantId] = useState<string | null>(null);
+  const [agentResetPassword, setAgentResetPassword] = useState("");
+  const [agentActionLoading, setAgentActionLoading] = useState(false);
+
+  const agentNeedsSetup = !isSuperAdmin && tenantSetupStatus === "pending_meta";
 
   const sectionMeta: Record<string, { title: string; subtitle: string }> = {
     contacts: { title: "Contacts CRM", subtitle: "Manage contacts, tags, attributes, and segmentation." },
@@ -1290,12 +1390,26 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     integrations: {
       title: "Integrations",
       subtitle: "API keys and endpoints so other systems can send WhatsApp messages on behalf of this workspace."
+    },
+    platform: {
+      title: "Platform Admin",
+      subtitle: "All workspaces, users, and Meta WhatsApp connection health (super-admin only)."
     }
   };
 
   useEffect(() => {
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    void apiRequest<{ allow_open_registration: boolean }>("/auth/public-config")
+      .then((data) => setAllowOpenRegistration(Boolean(data.allow_open_registration)))
+      .catch(() => setAllowOpenRegistration(true));
+  }, []);
+
+  useEffect(() => {
+    if (!allowOpenRegistration && authPanel === "register") setAuthPanel("login");
+  }, [allowOpenRegistration, authPanel]);
 
   const flash = useCallback((slot: FeedbackSlot, text: string, variant: InlineFeedbackKind) => {
     const prev = feedbackTimersRef.current[slot];
@@ -1374,6 +1488,49 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     }),
     [token]
   );
+
+  function applyMeProfile(data: MeProfile) {
+    setIsSuperAdmin(Boolean(data.is_super_admin));
+    setTenantSetupStatus(data.memberships?.[0]?.setup_status ?? "active");
+    if (typeof data.allow_open_registration === "boolean") {
+      setAllowOpenRegistration(data.allow_open_registration);
+    }
+  }
+
+  useEffect(() => {
+    if (!token) {
+      setIsSuperAdmin(false);
+      setTenantSetupStatus("active");
+      return;
+    }
+    let cancelled = false;
+    void apiRequest<MeProfile>("/auth/me", { headers: authHeaders })
+      .then((data) => {
+        if (!cancelled) applyMeProfile(data);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setIsSuperAdmin(false);
+          setTenantSetupStatus("active");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, authHeaders]);
+
+  useEffect(() => {
+    if (!token || mode !== "dashboard") return;
+    if (isSuperAdmin && activeTab !== "platform") {
+      setActiveTab("platform");
+      router.replace("/dashboard/platform");
+      return;
+    }
+    if (agentNeedsSetup && activeTab !== "settings") {
+      setActiveTab("settings");
+      router.replace("/dashboard/settings");
+    }
+  }, [token, mode, isSuperAdmin, agentNeedsSetup, activeTab, router]);
 
   useEffect(() => {
     if (campaignLaunchType !== "contacts" || campaignTargetMode !== "tags" || campaignTagIds.length === 0 || !token) {
@@ -1554,7 +1711,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
         body: JSON.stringify(registerBody)
       });
       setToken(data.access_token);
-      router.push("/dashboard/contacts");
+      const me = await apiRequest<MeProfile>("/auth/me", {
+        headers: { Authorization: `Bearer ${data.access_token}` }
+      });
+      applyMeProfile(me);
+      router.push(`/dashboard/${dashboardLandingSection(me)}`);
     } catch (error) {
       const msg = (error as Error).message;
       flash(
@@ -1576,7 +1737,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
         body: JSON.stringify({ email, password })
       });
       setToken(data.access_token);
-      router.push("/dashboard/contacts");
+      const me = await apiRequest<MeProfile>("/auth/me", {
+        headers: { Authorization: `Bearer ${data.access_token}` }
+      });
+      applyMeProfile(me);
+      router.push(`/dashboard/${dashboardLandingSection(me)}`);
     } catch (error) {
       flash("authLogin", (error as Error).message, "error");
     }
@@ -1622,7 +1787,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
         body: JSON.stringify({ phone_e164: e164, code: digits })
       });
       setToken(data.access_token);
-      router.push("/dashboard/contacts");
+      const me = await apiRequest<MeProfile>("/auth/me", {
+        headers: { Authorization: `Bearer ${data.access_token}` }
+      });
+      applyMeProfile(me);
+      router.push(`/dashboard/${dashboardLandingSection(me)}`);
     } catch (error) {
       flash("authPhoneLogin", (error as Error).message, "error");
     }
@@ -2064,6 +2233,11 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       await loadWhatsAppConnection();
       await loadWhatsAppConnections();
       await loadConnectionHealth();
+      const me = await apiRequest<MeProfile>("/auth/me", { headers: authHeaders });
+      applyMeProfile(me);
+      if (me.memberships?.[0]?.setup_status === "active") {
+        flash("waConnectionForm", "WhatsApp connected — your workspace is now active.", "success");
+      }
     } catch (error) {
       flash("waConnectionForm", (error as Error).message, "error");
     } finally {
@@ -2079,6 +2253,12 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, activeTab]);
 
+  useEffect(() => {
+    if (!token || isSuperAdmin || agentNeedsSetup) return;
+    void loadConnectionHealth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, isSuperAdmin, agentNeedsSetup]);
+
   async function loadConnectionHealth() {
     try {
       const q = waConnectionId ? `?connection_id=${encodeURIComponent(waConnectionId)}` : "";
@@ -2086,6 +2266,9 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
         overall: string;
         hints: string[];
         token_valid: boolean;
+        token_alert?: string | null;
+        token_alert_message?: string | null;
+        token_error?: string | null;
         waba_configured: boolean;
         webhook_ready: boolean;
         connection_configured: boolean;
@@ -2214,8 +2397,12 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       void loadExternalWebhookStatus(true);
       return;
     }
+    if (activeTab === "platform" && isSuperAdmin) {
+      void loadPlatformData(true);
+      return;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, activeTab]);
+  }, [token, activeTab, isSuperAdmin]);
 
   useEffect(() => {
     if (!token || activeTab !== "analytics") return;
@@ -2449,6 +2636,116 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
       }
     } finally {
       setStatsSnapshotRefreshing(false);
+    }
+  }
+
+  async function loadPlatformData(quiet?: boolean) {
+    if (!isSuperAdmin) return;
+    setPlatformLoading(true);
+    try {
+      const [summary, tenants] = await Promise.all([
+        apiRequest<{
+          agents_total: number;
+          agents_active: number;
+          agents_pending_meta: number;
+          agents_disabled: number;
+          agents_token_attention: number;
+          users: number;
+          whatsapp_connections: number;
+        }>("/platform/summary", { headers: authHeaders }),
+        apiRequest<PlatformTenantRow[]>("/platform/agents", { headers: authHeaders })
+      ]);
+      setPlatformSummary(summary);
+      setPlatformTenants(tenants);
+      if (!quiet) flash("platformPanel", "Platform data refreshed.", "success");
+    } catch (error) {
+      if (!quiet) flash("platformPanel", (error as Error).message, "error");
+    } finally {
+      setPlatformLoading(false);
+    }
+  }
+
+  async function toggleAgentActive(tenantId: string, enable: boolean) {
+    setAgentActionLoading(true);
+    try {
+      await apiRequest(`/platform/agents/${tenantId}`, {
+        method: "PATCH",
+        headers: authHeaders,
+        body: JSON.stringify({ is_active: enable })
+      });
+      flash("platformPanel", enable ? "Agent account enabled." : "Agent account disabled.", "success");
+      await loadPlatformData(true);
+    } catch (error) {
+      flash("platformPanel", (error as Error).message, "error");
+    } finally {
+      setAgentActionLoading(false);
+    }
+  }
+
+  async function submitAgentPasswordReset(tenantId: string) {
+    if (agentResetPassword.length < 8) {
+      flash("platformPanel", "Password must be at least 8 characters.", "error");
+      return;
+    }
+    setAgentActionLoading(true);
+    try {
+      await apiRequest(`/platform/agents/${tenantId}/reset-password`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ password: agentResetPassword })
+      });
+      setAgentActionTenantId(null);
+      setAgentResetPassword("");
+      flash("platformPanel", "Agent password reset. Share the new password securely.", "success");
+      await loadPlatformData(true);
+    } catch (error) {
+      flash("platformPanel", (error as Error).message, "error");
+    } finally {
+      setAgentActionLoading(false);
+    }
+  }
+
+  async function handleCreateAgent(event: FormEvent) {
+    event.preventDefault();
+    if (!isSuperAdmin) return;
+    const tenantName = newAgentTenantName.trim();
+    let tenantSlug = newAgentTenantSlug.trim().toLowerCase();
+    if (!tenantSlug) {
+      tenantSlug = slugifyWorkspaceName(tenantName);
+    }
+    if (tenantName.length < 2) {
+      flash("platformPanel", "Workspace name must be at least 2 characters.", "error");
+      return;
+    }
+    if (!tenantSlug || tenantSlug.length < 2) {
+      flash("platformPanel", "Could not build a workspace ID from that name. Use letters or numbers.", "error");
+      return;
+    }
+    setCreatingAgent(true);
+    try {
+      await apiRequest("/platform/agents", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          email: newAgentEmail.trim(),
+          password: newAgentPassword,
+          full_name: newAgentFullName.trim() || null,
+          tenant_name: tenantName,
+          tenant_slug: tenantSlug
+        })
+      });
+      setNewAgentEmail("");
+      setNewAgentPassword("");
+      setNewAgentFullName("");
+      setNewAgentTenantName("");
+      setNewAgentTenantSlug("");
+      setNewAgentSlugManual(false);
+      flash("platformPanel", "Agent account created. Share login credentials with the agent.", "success");
+      await loadPlatformData(true);
+    } catch (error) {
+      flash("platformPanel", (error as Error).message, "error");
+    } finally {
+      setCreatingAgent(false);
     }
   }
 
@@ -2859,35 +3156,41 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
             <div className="text-center">
               <p className="text-sm text-zinc-400">Secure access to your WhatsApp workspace</p>
             </div>
-            <div className="flex rounded-2xl border border-crm-border bg-crm-elevated/50 p-1 shadow-inner">
-              <button
-                type="button"
-                className={`flex-1 rounded-xl py-3 text-sm font-bold transition ${
-                  authPanel === "login"
-                    ? "bg-crm-accent text-black shadow-md"
-                    : "text-zinc-400 hover:text-white"
-                }`}
-                onClick={() => setAuthPanel("login")}
-              >
-                Sign in
-              </button>
-              <button
-                type="button"
-                className={`flex-1 rounded-xl py-3 text-sm font-bold transition ${
-                  authPanel === "register"
-                    ? "bg-crm-accent text-black shadow-md"
-                    : "text-zinc-400 hover:text-white"
-                }`}
-                onClick={() => {
-                  setRegisterCustomizeWorkspace(false);
-                  setAuthPanel("register");
-                }}
-              >
-                Create account
-              </button>
-            </div>
+            {allowOpenRegistration ? (
+              <div className="flex rounded-2xl border border-crm-border bg-crm-elevated/50 p-1 shadow-inner">
+                <button
+                  type="button"
+                  className={`flex-1 rounded-xl py-3 text-sm font-bold transition ${
+                    authPanel === "login"
+                      ? "bg-crm-accent text-black shadow-md"
+                      : "text-zinc-400 hover:text-white"
+                  }`}
+                  onClick={() => setAuthPanel("login")}
+                >
+                  Sign in
+                </button>
+                <button
+                  type="button"
+                  className={`flex-1 rounded-xl py-3 text-sm font-bold transition ${
+                    authPanel === "register"
+                      ? "bg-crm-accent text-black shadow-md"
+                      : "text-zinc-400 hover:text-white"
+                  }`}
+                  onClick={() => {
+                    setRegisterCustomizeWorkspace(false);
+                    setAuthPanel("register");
+                  }}
+                >
+                  Create account
+                </button>
+              </div>
+            ) : (
+              <p className="rounded-xl border border-zinc-700 bg-zinc-900/80 px-4 py-3 text-center text-sm text-zinc-400">
+                Accounts are created by your platform administrator. Sign in with the credentials you were given.
+              </p>
+            )}
 
-            {authPanel === "login" ? (
+            {authPanel === "login" || !allowOpenRegistration ? (
               <div className="space-y-4 rounded-2xl border border-crm-border bg-white p-6 shadow-xl shadow-black/50">
                 <div>
                   <h2 className="text-xl font-bold text-zinc-900">Welcome back</h2>
@@ -3105,6 +3408,29 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
           </div>
         ) : (
           <>
+            {!isSuperAdmin && connectionHealth?.token_alert && (
+              <section className="rounded-2xl border border-rose-500/50 bg-rose-950/40 px-4 py-3 text-sm text-rose-100">
+                <p className="font-semibold">
+                  {connectionHealth.token_alert === "expired"
+                    ? "WhatsApp token expired — sends and inbox may fail"
+                    : "WhatsApp token needs attention"}
+                </p>
+                <p className="mt-1 text-xs text-rose-200/90">
+                  {connectionHealth.token_alert_message || "Update your access token in WhatsApp Settings."}
+                </p>
+                <button
+                  type="button"
+                  className={`${BTN_PRIMARY} mt-3 !min-h-0 py-2 text-xs`}
+                  onClick={() => {
+                    setActiveTab("settings");
+                    router.push("/dashboard/settings");
+                  }}
+                >
+                  Go to WhatsApp Settings
+                </button>
+              </section>
+            )}
+            {!isSuperAdmin && (
             <section className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
                 <p className="text-xs text-zinc-500">
@@ -3164,57 +3490,102 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                 </div>
               </div>
             </section>
+            )}
 
             <section className="grid gap-4 lg:grid-cols-[240px,1fr]">
               <aside className={`${CARD_CLASS} h-fit space-y-2 lg:sticky lg:top-6`}>
-                <p className="px-2 text-xs font-semibold uppercase tracking-wide text-crm-accent/80">Workspace</p>
-                {[
-                  ["contacts", "Contacts", "CRM"],
-                  ["campaigns", "Campaigns", "Broadcast"],
-                  ["templates", "Templates", "Meta"],
-                  ["inbox", "Inbox", "Live Chat"]
-                ].map(([key, label, hint]) => (
-                  <button
-                    key={key}
-                    className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium transition ${
-                      activeTab === key
-                        ? "bg-crm-accent text-black shadow-md shadow-crm-accent/20"
-                        : "text-zinc-300 hover:bg-zinc-800/80 hover:text-white"
-                    }`}
-                    onClick={() => {
-                      const next = key as DashboardSection;
-                      setActiveTab(next);
-                      router.push(`/dashboard/${next}`);
-                    }}
-                  >
-                    <div>{label}</div>
-                    <div className={`text-xs ${activeTab === key ? "text-black/70" : "text-zinc-500"}`}>{hint}</div>
-                  </button>
-                ))}
-                <p className="px-2 pt-2 text-xs font-semibold uppercase tracking-wide text-crm-accent/80">Admin</p>
-                {[
-                  ["settings", "WhatsApp Settings", "Connections"],
-                  ["analytics", "Analytics", "Reports"],
-                  ["automations", "Automations", "Flows"],
-                  ["integrations", "Integrations", "External Apps"]
-                ].map(([key, label, hint]) => (
-                  <button
-                    key={key}
-                    className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium transition ${
-                      activeTab === key
-                        ? "bg-crm-accent text-black shadow-md shadow-crm-accent/20"
-                        : "text-zinc-300 hover:bg-zinc-800/80 hover:text-white"
-                    }`}
-                    onClick={() => {
-                      const next = key as DashboardSection;
-                      setActiveTab(next);
-                      router.push(`/dashboard/${next}`);
-                    }}
-                  >
-                    <div>{label}</div>
-                    <div className={`text-xs ${activeTab === key ? "text-black/70" : "text-zinc-500"}`}>{hint}</div>
-                  </button>
-                ))}
+                {isSuperAdmin ? (
+                  <>
+                    <p className="px-2 text-xs font-semibold uppercase tracking-wide text-crm-accent/80">Platform</p>
+                    <button
+                      className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium transition ${
+                        activeTab === "platform"
+                          ? "bg-crm-accent text-black shadow-md shadow-crm-accent/20"
+                          : "text-zinc-300 hover:bg-zinc-800/80 hover:text-white"
+                      }`}
+                      onClick={() => {
+                        setActiveTab("platform");
+                        router.push("/dashboard/platform");
+                      }}
+                    >
+                      <div>Agent accounts</div>
+                      <div className={`text-xs ${activeTab === "platform" ? "text-black/70" : "text-zinc-500"}`}>
+                        Create & monitor
+                      </div>
+                    </button>
+                  </>
+                ) : agentNeedsSetup ? (
+                  <>
+                    <p className="px-2 text-xs font-semibold uppercase tracking-wide text-amber-400/90">Setup required</p>
+                    <button
+                      className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium transition ${
+                        activeTab === "settings"
+                          ? "bg-crm-accent text-black shadow-md shadow-crm-accent/20"
+                          : "text-zinc-300 hover:bg-zinc-800/80 hover:text-white"
+                      }`}
+                      onClick={() => {
+                        setActiveTab("settings");
+                        router.push("/dashboard/settings");
+                      }}
+                    >
+                      <div>WhatsApp Settings</div>
+                      <div className={`text-xs ${activeTab === "settings" ? "text-black/70" : "text-zinc-500"}`}>
+                        Connect Meta to activate
+                      </div>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <p className="px-2 text-xs font-semibold uppercase tracking-wide text-crm-accent/80">Workspace</p>
+                    {[
+                      ["contacts", "Contacts", "CRM"],
+                      ["campaigns", "Campaigns", "Broadcast"],
+                      ["templates", "Templates", "Meta"],
+                      ["inbox", "Inbox", "Live Chat"]
+                    ].map(([key, label, hint]) => (
+                      <button
+                        key={key}
+                        className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium transition ${
+                          activeTab === key
+                            ? "bg-crm-accent text-black shadow-md shadow-crm-accent/20"
+                            : "text-zinc-300 hover:bg-zinc-800/80 hover:text-white"
+                        }`}
+                        onClick={() => {
+                          const next = key as DashboardSection;
+                          setActiveTab(next);
+                          router.push(`/dashboard/${next}`);
+                        }}
+                      >
+                        <div>{label}</div>
+                        <div className={`text-xs ${activeTab === key ? "text-black/70" : "text-zinc-500"}`}>{hint}</div>
+                      </button>
+                    ))}
+                    <p className="px-2 pt-2 text-xs font-semibold uppercase tracking-wide text-crm-accent/80">Admin</p>
+                    {[
+                      ["settings", "WhatsApp Settings", "Connections"],
+                      ["analytics", "Analytics", "Reports"],
+                      ["automations", "Automations", "Flows"],
+                      ["integrations", "Integrations", "External Apps"]
+                    ].map(([key, label, hint]) => (
+                      <button
+                        key={key}
+                        className={`w-full rounded-xl px-3 py-2 text-left text-sm font-medium transition ${
+                          activeTab === key
+                            ? "bg-crm-accent text-black shadow-md shadow-crm-accent/20"
+                            : "text-zinc-300 hover:bg-zinc-800/80 hover:text-white"
+                        }`}
+                        onClick={() => {
+                          const next = key as DashboardSection;
+                          setActiveTab(next);
+                          router.push(`/dashboard/${next}`);
+                        }}
+                      >
+                        <div>{label}</div>
+                        <div className={`text-xs ${activeTab === key ? "text-black/70" : "text-zinc-500"}`}>{hint}</div>
+                      </button>
+                    ))}
+                  </>
+                )}
               </aside>
 
               <div className="space-y-4">
@@ -3228,38 +3599,50 @@ export function AppClient({ mode = "dashboard", initialSection = "contacts" }: {
                   <span className="hidden text-xs text-zinc-400 sm:inline">
                     {statsUpdatedAt ? `Data as of ${statsUpdatedAt.toLocaleTimeString()}` : ""}
                   </span>
-                  <button
-                    type="button"
-                    className={`${BTN_SECONDARY} !min-h-0 py-2 pl-3 pr-3 text-xs`}
-                    disabled={!token || statsSnapshotRefreshing}
-                    onClick={() => void refreshDashboardSnapshot(true)}
-                  >
-                    {statsSnapshotRefreshing ? (
-                      <>
-                        <Spinner className="h-3.5 w-3.5" /> Refreshing…
-                      </>
-                    ) : (
-                      "Refresh workspace data"
-                    )}
-                  </button>
+                  {!isSuperAdmin && (
+                    <button
+                      type="button"
+                      className={`${BTN_SECONDARY} !min-h-0 py-2 pl-3 pr-3 text-xs`}
+                      disabled={!token || statsSnapshotRefreshing}
+                      onClick={() => void refreshDashboardSnapshot(true)}
+                    >
+                      {statsSnapshotRefreshing ? (
+                        <>
+                          <Spinner className="h-3.5 w-3.5" /> Refreshing…
+                        </>
+                      ) : (
+                        "Refresh workspace data"
+                      )}
+                    </button>
+                  )}
                 </div>
                 <InlineFeedbackText feedback={inlineFeedback.sectionRefresh} className="text-right" />
               </div>
             </section>
-            {waConnections.length === 0 && (
+            {!isSuperAdmin && (agentNeedsSetup || waConnections.length === 0) && (
               <section className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4 space-y-3">
-                <h3 className="text-base font-semibold text-amber-100">Get started — WhatsApp CRM setup</h3>
-                <ol className="list-decimal list-inside space-y-1 text-sm text-amber-100/90">
-                  <li>
-                    Open <strong>WhatsApp Settings</strong> and save Phone Number ID, WABA ID, access token, verify token, and app secret.
-                  </li>
-                  <li>
-                    In <strong>Templates</strong>, sync from Meta and confirm templates show as <strong>APPROVED</strong>.
-                  </li>
-                  <li>Send a template test to your phone from Settings.</li>
-                  <li>Add contacts, then create a campaign or use <strong>Integrations</strong> for an external CRM.</li>
-                  <li>For inbound inbox: set Meta webhook to your public API URL (see runbook in repo docs).</li>
-                </ol>
+                <h3 className="text-base font-semibold text-amber-100">
+                  {agentNeedsSetup ? "Activate your workspace" : "Get started — WhatsApp CRM setup"}
+                </h3>
+                {agentNeedsSetup ? (
+                  <p className="text-sm text-amber-100/90">
+                    Your account was created by the platform admin. Add your Meta WhatsApp credentials below (Phone Number ID,
+                    WABA ID, access token, verify token, app secret). When the connection is healthy, your full CRM unlocks
+                    automatically.
+                  </p>
+                ) : (
+                  <ol className="list-decimal list-inside space-y-1 text-sm text-amber-100/90">
+                    <li>
+                      Open <strong>WhatsApp Settings</strong> and save Phone Number ID, WABA ID, access token, verify token, and app secret.
+                    </li>
+                    <li>
+                      In <strong>Templates</strong>, sync from Meta and confirm templates show as <strong>APPROVED</strong>.
+                    </li>
+                    <li>Send a template test to your phone from Settings.</li>
+                    <li>Add contacts, then create a campaign or use <strong>Integrations</strong> for an external CRM.</li>
+                    <li>For inbound inbox: set Meta webhook to your public API URL (see runbook in repo docs).</li>
+                  </ol>
+                )}
                 <button
                   type="button"
                   className={`${BTN_PRIMARY_BLUE} !min-h-0 py-2 text-sm`}
@@ -4067,8 +4450,30 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                         </button>
                     </div>
                   </div>
+                  {connectionHealth?.token_alert && (
+                    <div
+                      className={`rounded-xl border px-3 py-3 text-sm ${
+                        connectionHealth.token_alert === "expired"
+                          ? "border-rose-500/50 bg-rose-950/50 text-rose-100"
+                          : "border-amber-500/40 bg-amber-950/40 text-amber-100"
+                      }`}
+                    >
+                      <p className="font-semibold">
+                        {connectionHealth.token_alert === "expired"
+                          ? "Meta access token expired"
+                          : connectionHealth.token_alert === "missing"
+                            ? "Meta access token missing"
+                            : "Meta access token problem"}
+                      </p>
+                      <p className="mt-1 text-xs leading-relaxed opacity-90">
+                        {connectionHealth.token_alert_message ||
+                          connectionHealth.token_error ||
+                          "Paste a fresh long-lived token from Meta and save this connection."}
+                      </p>
+                    </div>
+                  )}
                   {connectionHealth && connectionHealth.overall !== "healthy" && connectionHealth.hints.length > 0 && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-900">
+                    <div className="rounded-xl border border-amber-500/30 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
                       {connectionHealth.hints.map((hint) => (
                         <p key={hint} className="leading-relaxed">
                           • {hint}
@@ -5044,6 +5449,319 @@ Body: { "to_phone_e164": "+9198...", "name": "Rohit", "body_parameters": [{ "tex
                     Rule-based flows, triggers, and sequences will live here. The workspace metrics above stay in sync when you use{" "}
                     <span className="font-medium text-zinc-200">Refresh workspace data</span>.
                   </p>
+                </section>
+              )}
+              {activeTab === "platform" && isSuperAdmin && (
+                <section className="space-y-4">
+                  <div className={`${CARD_CLASS} flex flex-wrap items-center justify-between gap-3`}>
+                    <div>
+                      <h3 className="text-base font-semibold text-zinc-100">Agent accounts</h3>
+                      <p className="text-sm text-zinc-400">
+                        Create agent workspaces. Agents complete WhatsApp Settings to activate their CRM.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className={`${BTN_SECONDARY} !min-h-0 py-2 text-xs`}
+                      disabled={platformLoading}
+                      onClick={() => void loadPlatformData()}
+                    >
+                      {platformLoading ? (
+                        <>
+                          <Spinner className="h-3.5 w-3.5" /> Refreshing…
+                        </>
+                      ) : (
+                        "Refresh platform data"
+                      )}
+                    </button>
+                  </div>
+                  <InlineFeedbackText feedback={inlineFeedback.platformPanel} />
+                  {platformSummary && platformSummary.agents_token_attention > 0 && (
+                    <div className="rounded-2xl border border-rose-500/50 bg-rose-950/40 px-4 py-3 text-sm text-rose-100">
+                      <p className="font-semibold">Meta token attention needed</p>
+                      <p className="mt-1 text-rose-200/90">
+                        {platformSummary.agents_token_attention} agent
+                        {platformSummary.agents_token_attention === 1 ? "" : "s"} ha
+                        {platformSummary.agents_token_attention === 1 ? "s" : "ve"} a missing, expired, or invalid WhatsApp access token.
+                        Ask the agent to update WhatsApp Settings or reset their connection.
+                      </p>
+                    </div>
+                  )}
+                  {platformSummary && (
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+                      <div className={CARD_CLASS}>
+                        <p className="text-xs text-zinc-500">Total agents</p>
+                        <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">{platformSummary.agents_total}</p>
+                      </div>
+                      <div className={CARD_CLASS}>
+                        <p className="text-xs text-zinc-500">Active</p>
+                        <p className="mt-1 text-2xl font-semibold tabular-nums text-lime-400">{platformSummary.agents_active}</p>
+                      </div>
+                      <div className={CARD_CLASS}>
+                        <p className="text-xs text-zinc-500">Pending Meta setup</p>
+                        <p className="mt-1 text-2xl font-semibold tabular-nums text-amber-300">
+                          {platformSummary.agents_pending_meta}
+                        </p>
+                      </div>
+                      <div className={CARD_CLASS}>
+                        <p className="text-xs text-zinc-500">Token alerts</p>
+                        <p
+                          className={`mt-1 text-2xl font-semibold tabular-nums ${
+                            platformSummary.agents_token_attention > 0 ? "text-rose-400" : "text-zinc-100"
+                          }`}
+                        >
+                          {platformSummary.agents_token_attention}
+                        </p>
+                      </div>
+                      <div className={CARD_CLASS}>
+                        <p className="text-xs text-zinc-500">Disabled</p>
+                        <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-400">{platformSummary.agents_disabled}</p>
+                      </div>
+                      <div className={CARD_CLASS}>
+                        <p className="text-xs text-zinc-500">WhatsApp connections</p>
+                        <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
+                          {platformSummary.whatsapp_connections}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  <form onSubmit={handleCreateAgent} className={`${CARD_CLASS} grid gap-3 md:grid-cols-2`}>
+                    <h3 className="text-base font-semibold text-zinc-100 md:col-span-2">Create agent account</h3>
+                    <div className="space-y-1">
+                      <label className="text-xs text-zinc-500">Agent email</label>
+                      <input
+                        className={INPUT_CLASS}
+                        type="email"
+                        required
+                        value={newAgentEmail}
+                        onChange={(e) => setNewAgentEmail(e.target.value)}
+                        placeholder="agent@company.com"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-zinc-500">Temporary password</label>
+                      <input
+                        className={INPUT_CLASS}
+                        type="password"
+                        required
+                        minLength={8}
+                        value={newAgentPassword}
+                        onChange={(e) => setNewAgentPassword(e.target.value)}
+                        placeholder="Min 8 characters"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-zinc-500">Agent name (optional)</label>
+                      <input
+                        className={INPUT_CLASS}
+                        value={newAgentFullName}
+                        onChange={(e) => setNewAgentFullName(e.target.value)}
+                        placeholder="Full name"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-zinc-500">Workspace name</label>
+                      <input
+                        className={INPUT_CLASS}
+                        required
+                        value={newAgentTenantName}
+                        onChange={(e) => {
+                          const name = e.target.value;
+                          setNewAgentTenantName(name);
+                          if (!newAgentSlugManual) {
+                            setNewAgentTenantSlug(slugifyWorkspaceName(name));
+                          }
+                        }}
+                        placeholder="Acme Sales"
+                      />
+                    </div>
+                    <div className="space-y-1 md:col-span-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs text-zinc-500">Workspace ID (slug)</label>
+                        {newAgentSlugManual ? (
+                          <button
+                            type="button"
+                            className="text-[11px] font-semibold text-crm-accent hover:underline"
+                            onClick={() => {
+                              setNewAgentSlugManual(false);
+                              setNewAgentTenantSlug(slugifyWorkspaceName(newAgentTenantName));
+                            }}
+                          >
+                            Auto-generate from name
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-zinc-600">Auto from workspace name</span>
+                        )}
+                      </div>
+                      <input
+                        className={`${INPUT_CLASS} ${!newAgentSlugManual ? "text-zinc-400" : ""}`}
+                        readOnly={!newAgentSlugManual}
+                        pattern="^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                        value={newAgentTenantSlug}
+                        onChange={(e) => {
+                          setNewAgentSlugManual(true);
+                          setNewAgentTenantSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""));
+                        }}
+                        placeholder={slugifyWorkspaceName(newAgentTenantName) || "acme-sales"}
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <button type="submit" className={BTN_PRIMARY} disabled={creatingAgent || platformLoading}>
+                        {creatingAgent ? "Creating…" : "Create agent account"}
+                      </button>
+                    </div>
+                  </form>
+                  <div className={`${CARD_CLASS} overflow-x-auto`}>
+                    <table className="min-w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-zinc-700 text-xs uppercase tracking-wide text-zinc-500">
+                          <th className="px-3 py-2 font-semibold">Workspace</th>
+                          <th className="px-3 py-2 font-semibold">Agent</th>
+                          <th className="px-3 py-2 font-semibold">Status</th>
+                          <th className="px-3 py-2 font-semibold">Meta health</th>
+                          <th className="px-3 py-2 font-semibold text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {platformLoading && platformTenants.length === 0 ? (
+                          <tr>
+                            <td className="px-3 py-8 text-center text-zinc-500" colSpan={5}>
+                              Loading…
+                            </td>
+                          </tr>
+                        ) : (
+                          platformTenants.map((row) => {
+                            const health = row.meta_health;
+                            const overall = health?.overall ?? "disconnected";
+                            const tokenAlert = health?.token_alert;
+                            const isDisabled = row.agent_is_active === false;
+                            return (
+                              <tr key={row.tenant_id} className="border-b border-zinc-800/80 align-top">
+                                <td className="px-3 py-3">
+                                  <p className="font-medium text-zinc-100">{row.tenant_name}</p>
+                                  <p className="text-xs text-zinc-500">{row.tenant_slug}</p>
+                                </td>
+                                <td className="px-3 py-3 text-xs text-zinc-400">
+                                  <p className="text-zinc-300">{row.agent_email || row.users[0]?.email || "—"}</p>
+                                  {row.agent_full_name && <p className="text-zinc-500">{row.agent_full_name}</p>}
+                                </td>
+                                <td className="px-3 py-3">
+                                  <div className="flex flex-wrap gap-1">
+                                    <span
+                                      className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
+                                        row.setup_status === "active"
+                                          ? "bg-lime-500/20 text-lime-400"
+                                          : "bg-amber-500/20 text-amber-300"
+                                      }`}
+                                    >
+                                      {row.setup_status === "active" ? "active" : "pending Meta"}
+                                    </span>
+                                    {isDisabled && (
+                                      <span className="inline-flex rounded-full bg-zinc-700 px-2 py-0.5 text-xs font-semibold text-zinc-300">
+                                        disabled
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-3">
+                                  <span
+                                    className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
+                                      overall === "healthy"
+                                        ? "bg-lime-500/20 text-lime-400"
+                                        : overall === "attention"
+                                          ? "bg-amber-500/20 text-amber-300"
+                                          : "bg-rose-500/20 text-rose-400"
+                                    }`}
+                                  >
+                                    {overall}
+                                  </span>
+                                  {tokenAlert === "expired" && (
+                                    <p className="mt-1 text-[11px] font-semibold text-rose-400">Token expired</p>
+                                  )}
+                                  {tokenAlert === "invalid" && (
+                                    <p className="mt-1 text-[11px] font-semibold text-amber-300">Token invalid</p>
+                                  )}
+                                  {health?.token_alert_message && tokenAlert && (
+                                    <p className="mt-1 text-[11px] text-rose-400/90">{health.token_alert_message}</p>
+                                  )}
+                                  {health?.phone_number_id && (
+                                    <p className="mt-1 font-mono text-[10px] text-zinc-500">{health.phone_number_id}</p>
+                                  )}
+                                </td>
+                                <td className="px-3 py-3 text-right">
+                                  <div className="flex flex-col items-end gap-2">
+                                    <button
+                                      type="button"
+                                      className={`${BTN_ROW} border border-zinc-600 text-zinc-200 hover:bg-zinc-800`}
+                                      disabled={agentActionLoading}
+                                      onClick={() => void toggleAgentActive(row.tenant_id, isDisabled)}
+                                    >
+                                      {isDisabled ? "Enable" : "Disable"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`${BTN_ROW} border border-zinc-600 text-zinc-200 hover:bg-zinc-800`}
+                                      disabled={agentActionLoading}
+                                      onClick={() => {
+                                        setAgentActionTenantId(row.tenant_id);
+                                        setAgentResetPassword("");
+                                      }}
+                                    >
+                                      Reset password
+                                    </button>
+                                  </div>
+                                  {agentActionTenantId === row.tenant_id && (
+                                    <div className="mt-2 space-y-2 text-left">
+                                      <input
+                                        className={INPUT_CLASS}
+                                        type="password"
+                                        placeholder="New password (min 8)"
+                                        value={agentResetPassword}
+                                        onChange={(e) => setAgentResetPassword(e.target.value)}
+                                      />
+                                      <div className="flex gap-2">
+                                        <button
+                                          type="button"
+                                          className={`${BTN_PRIMARY} !min-h-0 py-1.5 text-xs`}
+                                          disabled={agentActionLoading}
+                                          onClick={() => void submitAgentPasswordReset(row.tenant_id)}
+                                        >
+                                          Save
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className={`${BTN_SECONDARY} !min-h-0 py-1.5 text-xs`}
+                                          onClick={() => {
+                                            setAgentActionTenantId(null);
+                                            setAgentResetPassword("");
+                                          }}
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                        {!platformLoading && platformTenants.length === 0 && (
+                          <tr>
+                            <td className="px-3 py-8 text-center text-zinc-500" colSpan={5}>
+                              No agent accounts yet. Create one above.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+              {activeTab === "platform" && !isSuperAdmin && (
+                <section className={`${CARD_CLASS} text-sm text-zinc-400`}>
+                  Platform admin access is not enabled for your account. Set <code className="text-xs">SUPER_ADMIN_EMAILS</code>{" "}
+                  on the API server and log in with a listed email.
                 </section>
               )}
               {activeTab === "integrations" && (
