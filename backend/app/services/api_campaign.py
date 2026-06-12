@@ -69,6 +69,24 @@ def trigger_api_campaign_send(
             var_keys = body_template_variables(tmpl.components)
             stored_vars = build_template_body_parameters(var_keys, contact_name=contact.name)
 
+    existing = (
+        db.query(CampaignRecipient)
+        .filter(
+            CampaignRecipient.campaign_id == campaign.id,
+            CampaignRecipient.contact_id == contact.id,
+        )
+        .first()
+    )
+    if existing:
+        # API campaigns may trigger many times for the same parent phone (daily attendance).
+        existing.state = "queued"
+        existing.template_variables = stored_vars
+        existing.last_error = None
+        existing.next_retry_at = None
+        existing.attempts = 0
+        db.flush()
+        return existing
+
     recipient = CampaignRecipient(
         campaign_id=campaign.id,
         contact_id=contact.id,
