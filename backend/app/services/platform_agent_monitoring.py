@@ -21,7 +21,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.whatsapp_connection import WhatsAppConnection
 from app.services.messaging_policy import CUSTOMER_SERVICE_WINDOW, build_messaging_window
-from app.services.template_preview import build_template_preview_from_stored
+from app.services.template_preview import build_template_preview_from_stored, resolve_template_message_preview
 from app.services.whatsapp_connection_health import evaluate_whatsapp_connection
 
 
@@ -313,7 +313,7 @@ def list_agent_conversation_messages(
     out: list[dict] = []
     for item in messages:
         payload = dict(item.payload or {})
-        if item.type == "template" and not payload.get("preview_text"):
+        if item.type == "template":
             name = payload.get("template_name")
             lang = payload.get("language_code")
             if isinstance(name, str) and isinstance(lang, str):
@@ -327,7 +327,7 @@ def list_agent_conversation_messages(
                     .first()
                 )
                 if row:
-                    prev = build_template_preview_from_stored(row.components)
+                    prev = resolve_template_message_preview(row.components, payload)
                     if prev:
                         payload["preview_text"] = prev
         out.append(

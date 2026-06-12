@@ -75,6 +75,97 @@ def _apply_component_example(text: str, example: Any, *, kind: str) -> str:
     return text
 
 
+def _extract_body_send_parameters(template_components: list[dict] | None) -> list[dict]:
+    if not template_components:
+        return []
+    for comp in template_components:
+        if not isinstance(comp, dict):
+            continue
+        if str(comp.get("type") or "").lower() != "body":
+            continue
+        params = comp.get("parameters")
+        if isinstance(params, list):
+            return [p for p in params if isinstance(p, dict)]
+    return []
+
+
+def _substitute_send_values_in_text(text: str, body_params: list[dict], var_keys: list[str]) -> str:
+    """Replace {{name}} / {{n}} placeholders with values actually sent to Meta."""
+    if not body_params:
+        return text
+    out = text
+    for param in body_params:
+        pname = param.get("parameter_name")
+        val = str(param.get("text") or "").strip()
+        if not val or not pname:
+            continue
+        out = re.sub(r"\{\{\s*" + re.escape(str(pname)) + r"\s*\}\}", val, out)
+    values = [str(p.get("text") or "").strip() for p in body_params if str(p.get("text") or "").strip()]
+    if not values:
+        return out
+    if var_keys and all(k.isdigit() for k in var_keys):
+        return _substitute_positional_by_appearance(out, values)
+    for i, key in enumerate(var_keys):
+        if i >= len(values):
+            break
+        if not str(key).isdigit():
+            out = re.sub(r"\{\{\s*" + re.escape(str(key)) + r"\s*\}\}", values[i], out)
+    return out
+
+
+def build_template_preview_for_send(
+    components_wrapped: dict | None,
+    template_components: list[dict] | None,
+) -> str | None:
+    """
+    Human-readable preview using the parameter values sent on this message (not Meta sample examples).
+    """
+    if not components_wrapped or not isinstance(components_wrapped, dict):
+        return None
+    raw = components_wrapped.get("components")
+    if not isinstance(raw, list):
+        return None
+    body_params = _extract_body_send_parameters(template_components)
+    var_keys = body_template_variables(components_wrapped)
+    chunks: list[str] = []
+    for comp in raw:
+        if not isinstance(comp, dict):
+            continue
+        ctype = str(comp.get("type") or "").upper()
+        fmt = str(comp.get("format") or "").upper()
+        text = comp.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        text = text.strip()
+        if ctype == "HEADER" and fmt == "TEXT":
+            chunks.append(text)
+        elif ctype == "BODY":
+            chunks.append(_substitute_send_values_in_text(text, body_params, var_keys))
+        elif ctype == "FOOTER":
+            chunks.append(text)
+    if not chunks:
+        return None
+    return "\n".join(chunks).strip()
+
+
+def resolve_template_message_preview(
+    components_wrapped: dict | None,
+    payload: dict | None,
+) -> str | None:
+    """Prefer rendered send values; fall back to stored preview or Meta sample text."""
+    if not isinstance(payload, dict):
+        return build_template_preview_from_stored(components_wrapped)
+    send_components = payload.get("template_components")
+    if isinstance(send_components, list) and send_components:
+        rendered = build_template_preview_for_send(components_wrapped, send_components)
+        if rendered:
+            return rendered
+    existing = payload.get("preview_text")
+    if isinstance(existing, str) and existing.strip():
+        return existing.strip()
+    return build_template_preview_from_stored(components_wrapped)
+
+
 def build_template_preview_from_stored(components_wrapped: dict | None) -> str | None:
     """
     components_wrapped matches DB shape: {\"components\": [<Meta component dicts>, ...]}.

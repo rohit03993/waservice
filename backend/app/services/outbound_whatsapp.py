@@ -16,7 +16,7 @@ from app.models.message import Message
 from app.models.message_template import MessageTemplate
 from app.services.connection_resolver import resolve_active_connection
 from app.services.meta_client import MetaClient
-from app.services.template_preview import build_template_preview_from_stored
+from app.services.template_preview import build_template_preview_for_send, build_template_preview_from_stored
 
 
 @dataclass
@@ -59,7 +59,11 @@ async def send_whatsapp_template_message(
         )
         .first()
     )
-    preview_text = build_template_preview_from_stored(tmpl_row.components) if tmpl_row else None
+    preview_text = None
+    if tmpl_row:
+        preview_text = build_template_preview_for_send(tmpl_row.components, template_components)
+        if not preview_text:
+            preview_text = build_template_preview_from_stored(tmpl_row.components)
 
     if message_id:
         contact = (
@@ -102,6 +106,11 @@ async def send_whatsapp_template_message(
                         "template_name": template_name.strip(),
                         "language_code": language_code.strip(),
                         "preview_text": preview_text,
+                        **(
+                            {"template_components": template_components}
+                            if template_components
+                            else {}
+                        ),
                         "meta_response": data,
                     },
                 )

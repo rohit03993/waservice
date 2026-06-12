@@ -46,7 +46,7 @@ from app.services.messaging_policy import (
 from app.services.meta_errors import format_meta_error
 from app.services.external_crm_webhook import deliver_external_crm_webhook, external_crm_webhook_configured
 from app.services.media_cache import prefetch_message_media_sync, read_cached_media, write_cached_media
-from app.services.template_preview import body_template_variables, build_template_preview_from_stored
+from app.services.template_preview import body_template_variables, build_template_preview_from_stored, resolve_template_message_preview
 from app.services.tenant_setup import try_activate_tenant_after_meta
 from app.services.whatsapp_connection_health import evaluate_whatsapp_connection
 from app.utils.whatsapp_media import extract_waba_media_id, is_media_message_type
@@ -814,7 +814,7 @@ def list_messages(
     out: list[dict] = []
     for item in messages:
         payload = dict(item.payload or {})
-        if item.type == "template" and not payload.get("preview_text"):
+        if item.type == "template":
             name = payload.get("template_name")
             lang = payload.get("language_code")
             if isinstance(name, str) and isinstance(lang, str):
@@ -828,7 +828,7 @@ def list_messages(
                     .first()
                 )
                 if row:
-                    prev = build_template_preview_from_stored(row.components)
+                    prev = resolve_template_message_preview(row.components, payload)
                     if prev:
                         payload["preview_text"] = prev
         out.append(
