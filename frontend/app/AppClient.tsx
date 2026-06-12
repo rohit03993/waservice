@@ -6527,7 +6527,7 @@ export function AppClient({
                       <p>AISENSY_API_URL={typeof window !== "undefined" ? window.location.origin : "https://wa.paldigital.in"}/api/v1</p>
                       <p>AISENSY_API_KEY=wsk.&lt;id&gt;.&lt;secret&gt;</p>
                       <p className="mt-2 font-sans text-[10px] text-zinc-500">
-                        CRM appends <code>/campaign/t1/api/v2</code> — full URL becomes{" "}
+                        Taskbook posts directly to that URL (no extra path). Alternate:{" "}
                         <code>{API_BASE}/campaign/t1/api/v2</code>
                       </p>
                     </div>

@@ -155,7 +155,7 @@ If your CRM already posts to AiSensy (`apiKey`, `campaignName`, `destination`, `
 
 | AiSensy (before) | waservice (after) |
 |------------------|-------------------|
-| `AISENSY_API_URL=https://backend.aisensy.com` | `AISENSY_API_URL=https://<API_HOST>/api/v1` |
+| `AISENSY_API_URL=https://backend.aisensy.com/campaign/t1/api/v2` | `AISENSY_API_URL=https://<API_HOST>/api/v1` (Taskbook posts to this URL directly) |
 | `AISENSY_API_KEY=<aisensy jwt>` | `AISENSY_API_KEY=wsk.<uuid>.<secret>` (Integrations tab) |
 | `campaignName` = live AiSensy campaign | Same string as **live API campaign name** in waservice, **or** the Meta **template_name** (e.g. `parent_attendance_auto_in_agra`) |
 | `destination` = `9198…` | Unchanged |

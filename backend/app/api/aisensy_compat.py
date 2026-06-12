@@ -1,7 +1,11 @@
 """
 AiSensy-compatible HTTP API for legacy CRMs (e.g. attendance Taskbook).
 
-Path matches AiSensy: POST /campaign/t1/api/v2
+Paths:
+  POST /campaign/t1/api/v2
+  POST /api/v1/campaign/t1/api/v2
+  POST /api/v1  (Taskbook uses AISENSY_API_URL as the full endpoint URL)
+
 Auth: apiKey in JSON body (use waservice wsk.<id>.<secret> from Integrations tab).
 """
 
@@ -19,21 +23,11 @@ from app.services.audit import log_admin_action
 router = APIRouter(tags=["aisensy-compat"])
 
 
-@router.post("/campaign/t1/api/v2", response_model=AiSensyCampaignTriggerResponse)
-async def aisensy_campaign_trigger(
+async def _handle_aisensy_campaign_trigger(
     payload: AiSensyCampaignTriggerRequest,
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session,
 ) -> AiSensyCampaignTriggerResponse:
-    """
-    Drop-in replacement for AiSensy API campaign trigger.
-
-    Point your CRM's AISENSY_API_URL to this server (e.g. https://wa.paldigital.in)
-    and set AISENSY_API_KEY to a waservice integration key (wsk...).
-
-    campaignName must match a **live** API campaign name in waservice, or its template_name
-    (e.g. parent_attendance_auto_in_agra).
-    """
     ctx = resolve_integration_auth(payload.apiKey, db)
 
     client_ip = request.client.host if request.client else "unknown"
@@ -94,3 +88,27 @@ async def aisensy_campaign_trigger(
         campaign_id=str(campaign.id),
         recipient_id=str(recipient.id),
     )
+
+
+@router.post("/campaign/t1/api/v2", response_model=AiSensyCampaignTriggerResponse)
+async def aisensy_campaign_trigger(
+    payload: AiSensyCampaignTriggerRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AiSensyCampaignTriggerResponse:
+    """Drop-in replacement for AiSensy: base URL + /campaign/t1/api/v2."""
+    return await _handle_aisensy_campaign_trigger(payload, request, db)
+
+
+@router.post("", response_model=AiSensyCampaignTriggerResponse)
+async def aisensy_campaign_trigger_api_v1_root(
+    payload: AiSensyCampaignTriggerRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AiSensyCampaignTriggerResponse:
+    """
+    Taskbook (and some CRMs) POST directly to AISENSY_API_URL with no path suffix.
+
+    Set AISENSY_API_URL=https://<host>/api/v1
+    """
+    return await _handle_aisensy_campaign_trigger(payload, request, db)
