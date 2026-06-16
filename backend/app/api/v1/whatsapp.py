@@ -33,8 +33,8 @@ from app.schemas.whatsapp import (
     WhatsAppTemplateCreateResponse,
     WhatsAppTemplateSendRequest,
     WhatsAppTemplateSendResponse,
-    template_body_parameters_to_meta_components,
 )
+from app.services.template_meta_components import build_meta_template_components
 from app.services.audit import log_admin_action
 from app.services.meta_client import MetaClient
 from app.services.outbound_whatsapp import send_whatsapp_template_message
@@ -571,7 +571,20 @@ async def send_template_test(
     client_ip = request.client.host if request.client else "unknown"
     check_rate_limit(key=f"send:template:{membership.tenant_id}:{membership.user_id}:{client_ip}", limit=30, window_seconds=60)
     connection = _resolve_connection(db=db, tenant_id=membership.tenant_id, connection_id=payload.connection_id)
-    comps = template_body_parameters_to_meta_components(payload.body_parameters)
+    tmpl_row = (
+        db.query(MessageTemplate)
+        .filter(
+            MessageTemplate.tenant_id == membership.tenant_id,
+            MessageTemplate.name == payload.template_name.strip(),
+            MessageTemplate.language == payload.language_code.strip(),
+        )
+        .first()
+    )
+    comps = build_meta_template_components(
+        payload.body_parameters,
+        category=tmpl_row.category if tmpl_row else None,
+        components_wrapped=tmpl_row.components if tmpl_row else None,
+    )
     try:
         result = await send_whatsapp_template_message(
             db,

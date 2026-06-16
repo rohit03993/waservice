@@ -22,8 +22,8 @@ from app.services.messaging_policy import (
 from app.services.meta_errors import format_meta_error
 from app.services.outbound_whatsapp import send_whatsapp_template_message
 from app.services.queue import enqueue_campaign_job_with_delay, move_due_delayed_jobs, pop_campaign_job
+from app.services.template_meta_components import build_meta_template_components
 from app.services.template_preview import body_template_variables
-from app.schemas.whatsapp import template_body_parameters_to_meta_components
 
 MAX_ATTEMPTS = 3
 
@@ -103,7 +103,11 @@ def process_job(job: dict) -> None:
             )
             for p in raw_params
         ]
-        components = template_body_parameters_to_meta_components(body_parameters)
+        components = build_meta_template_components(
+            body_parameters,
+            category=tmpl_row.category,
+            components_wrapped=tmpl_row.components,
+        )
 
         try:
             result = asyncio.run(

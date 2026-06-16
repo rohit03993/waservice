@@ -8,6 +8,7 @@ from app.api.integration_deps import IntegrationAuthContext, get_integration_aut
 from app.core.rate_limit import check_rate_limit
 from app.db.session import get_db
 from app.models.campaign import Campaign
+from app.models.message_template import MessageTemplate
 from app.schemas.integrations import (
     IntegrationApiCampaignTriggerRequest,
     IntegrationApiCampaignTriggerResponse,
@@ -16,11 +17,11 @@ from app.schemas.integrations import (
     IntegrationSendTextRequest,
     IntegrationSendTextResponse,
 )
-from app.schemas.whatsapp import template_body_parameters_to_meta_components
 from app.services.api_campaign import trigger_api_campaign_send
 from app.services.audit import log_admin_action
 from app.services.queue import enqueue_campaign_job
 from app.services.outbound_whatsapp import send_whatsapp_template_message, send_whatsapp_text_message
+from app.services.template_meta_components import build_meta_template_components
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
@@ -45,7 +46,20 @@ async def integration_send_template(
         limit=60,
         window_seconds=60,
     )
-    comps = template_body_parameters_to_meta_components(payload.body_parameters)
+    tmpl_row = (
+        db.query(MessageTemplate)
+        .filter(
+            MessageTemplate.tenant_id == ctx.tenant_id,
+            MessageTemplate.name == payload.template_name.strip(),
+            MessageTemplate.language == payload.language_code.strip(),
+        )
+        .first()
+    )
+    comps = build_meta_template_components(
+        payload.body_parameters,
+        category=tmpl_row.category if tmpl_row else None,
+        components_wrapped=tmpl_row.components if tmpl_row else None,
+    )
     try:
         result = await send_whatsapp_template_message(
             db,
