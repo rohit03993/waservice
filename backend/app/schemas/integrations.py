@@ -66,3 +66,30 @@ class IntegrationApiKeyListItem(BaseModel):
     label: str | None
     is_active: bool
     created_at: str
+
+
+class IntegrationTemplateItem(BaseModel):
+    """Read-only template metadata for external CRM sync (integration key auth)."""
+
+    id: str
+    name: str
+    language: str
+    category: str | None = None
+    status: str | None = None
+    preview_text: str | None = None
+    body_variables: list[str] = Field(default_factory=list)
+    param_count: int = 0
+
+
+class IntegrationApiCampaignItem(BaseModel):
+    """Read-only live API campaign metadata for external CRM sync (integration key auth)."""
+
+    id: str
+    name: str
+    status: str
+    campaign_type: str
+    template_name: str | None = None
+    template_language: str | None = None
+    preview_text: str | None = None
+    body_variables: list[str] = Field(default_factory=list)
+    param_count: int = 0

@@ -46,6 +46,8 @@ Migrations run on backend startup. Optional: `docker compose exec backend alembi
 | `POST /api/v1/auth/register` | First-time signup |
 | `POST /api/v1/auth/login` | Login |
 | `POST /api/v1/integrations/whatsapp/send-template` | External CRM send |
+| `GET /api/v1/integrations/templates` | External CRM list templates (integration key) |
+| `GET /api/v1/integrations/api-campaigns` | External CRM list live API campaigns |
 | `POST /api/v1/campaign/t1/api/v2` | AiSensy drop-in (legacy CRM, no code change) |
 | `GET/POST /api/v1/webhook/whatsapp` | Meta webhooks |
 

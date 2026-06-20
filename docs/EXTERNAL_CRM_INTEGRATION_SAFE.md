@@ -17,6 +17,8 @@ Meta webhooks (inbound/status) ───────────────┘ 
 | Send template from external app | Yes — `POST /api/v1/integrations/whatsapp/send-template` |
 | Send session text (24h window) | Yes — `POST /api/v1/integrations/whatsapp/send-text` |
 | AiSensy-style trigger | Yes — `POST /api/v1/integrations/campaigns/{id}/trigger` |
+| List templates (external CRM sync) | Yes — `GET /api/v1/integrations/templates` |
+| List live API campaigns (external CRM sync) | Yes — `GET /api/v1/integrations/api-campaigns` |
 | **AiSensy drop-in (no CRM code change)** | Yes — `POST /campaign/t1/api/v2` or `POST /api/v1/campaign/t1/api/v2` |
 | Create integration API key | Yes — admin UI **Integrations** or `POST /api/v1/admin/integration-keys` |
 | Meta webhook (inbound to waservice) | Yes — `GET/POST /api/v1/webhook/whatsapp` |
@@ -200,6 +202,8 @@ Give your CRM team:
 | Send template path | `/integrations/whatsapp/send-template` |
 | Send text path | `/integrations/whatsapp/send-text` |
 | Trigger campaign path | `/integrations/campaigns/{campaign_id}/trigger` |
+| List templates (read-only) | `GET /integrations/templates` |
+| List live API campaigns (read-only) | `GET /integrations/api-campaigns` |
 | Phone format | E.164 e.g. `+919876543210` |
 | Template name | Exact Meta name (lowercase, underscores) after sync |
 

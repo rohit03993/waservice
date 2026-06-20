@@ -1,6 +1,6 @@
 """Server-to-server API for external CRMs (X-Integration-Key auth)."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
@@ -10,20 +10,127 @@ from app.db.session import get_db
 from app.models.campaign import Campaign
 from app.models.message_template import MessageTemplate
 from app.schemas.integrations import (
+    IntegrationApiCampaignItem,
     IntegrationApiCampaignTriggerRequest,
     IntegrationApiCampaignTriggerResponse,
     IntegrationSendTemplateRequest,
     IntegrationSendTemplateResponse,
     IntegrationSendTextRequest,
     IntegrationSendTextResponse,
+    IntegrationTemplateItem,
 )
 from app.services.api_campaign import trigger_api_campaign_send
 from app.services.audit import log_admin_action
 from app.services.queue import enqueue_campaign_job
 from app.services.outbound_whatsapp import send_whatsapp_template_message, send_whatsapp_text_message
 from app.services.template_meta_components import build_meta_template_components
+from app.services.template_preview import body_template_variables, build_template_preview_from_stored
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
+
+
+def _template_metadata(row: MessageTemplate | None) -> tuple[str | None, list[str], int]:
+    if not row:
+        return None, [], 0
+    variables = body_template_variables(row.components)
+    return build_template_preview_from_stored(row.components), variables, len(variables)
+
+
+@router.get("/templates", response_model=list[IntegrationTemplateItem])
+def integration_list_templates(
+    request: Request,
+    ctx: IntegrationAuthContext = Depends(get_integration_auth),
+    db: Session = Depends(get_db),
+    status_filter: str = Query(default="APPROVED", alias="status"),
+    language: str | None = Query(default=None),
+) -> list[IntegrationTemplateItem]:
+    """
+    List WhatsApp templates synced from Meta for this integration key's tenant.
+    Auth: `X-Integration-Key: wsk.<key-id>.<secret>`.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(
+        key=f"int:list-tpl:{ctx.tenant_id}:{ctx.api_key_row.id}:{client_ip}",
+        limit=60,
+        window_seconds=60,
+    )
+    query = db.query(MessageTemplate).filter(MessageTemplate.tenant_id == ctx.tenant_id)
+    if status_filter.strip():
+        query = query.filter(MessageTemplate.status == status_filter.strip().upper())
+    if language and language.strip():
+        query = query.filter(MessageTemplate.language == language.strip())
+    rows = query.order_by(MessageTemplate.name.asc(), MessageTemplate.language.asc()).all()
+    out: list[IntegrationTemplateItem] = []
+    for row in rows:
+        preview, variables, count = _template_metadata(row)
+        out.append(
+            IntegrationTemplateItem(
+                id=str(row.id),
+                name=row.name,
+                language=row.language,
+                category=row.category,
+                status=row.status,
+                preview_text=preview,
+                body_variables=variables,
+                param_count=count,
+            )
+        )
+    return out
+
+
+@router.get("/api-campaigns", response_model=list[IntegrationApiCampaignItem])
+def integration_list_api_campaigns(
+    request: Request,
+    ctx: IntegrationAuthContext = Depends(get_integration_auth),
+    db: Session = Depends(get_db),
+    status_filter: str = Query(default="live", alias="status"),
+) -> list[IntegrationApiCampaignItem]:
+    """
+    List live API campaigns triggerable by external CRMs (`campaignName` on AiSensy send).
+    Auth: `X-Integration-Key: wsk.<key-id>.<secret>`.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    check_rate_limit(
+        key=f"int:list-camp:{ctx.tenant_id}:{ctx.api_key_row.id}:{client_ip}",
+        limit=60,
+        window_seconds=60,
+    )
+    query = (
+        db.query(Campaign)
+        .filter(Campaign.tenant_id == ctx.tenant_id, Campaign.campaign_type == "api")
+        .order_by(Campaign.name.asc())
+    )
+    if status_filter.strip():
+        query = query.filter(Campaign.status == status_filter.strip().lower())
+    campaigns = query.all()
+    out: list[IntegrationApiCampaignItem] = []
+    for campaign in campaigns:
+        tmpl_row = None
+        if campaign.template_name and campaign.template_language:
+            tmpl_row = (
+                db.query(MessageTemplate)
+                .filter(
+                    MessageTemplate.tenant_id == ctx.tenant_id,
+                    MessageTemplate.name == campaign.template_name.strip(),
+                    MessageTemplate.language == campaign.template_language.strip(),
+                )
+                .first()
+            )
+        preview, variables, count = _template_metadata(tmpl_row)
+        out.append(
+            IntegrationApiCampaignItem(
+                id=str(campaign.id),
+                name=campaign.name,
+                status=campaign.status,
+                campaign_type=campaign.campaign_type,
+                template_name=campaign.template_name,
+                template_language=campaign.template_language,
+                preview_text=preview,
+                body_variables=variables,
+                param_count=count,
+            )
+        )
+    return out
 
 
 @router.post("/whatsapp/send-template", response_model=IntegrationSendTemplateResponse)
