@@ -420,6 +420,25 @@ function isMetaAccessTokenError(text: string): boolean {
   return false;
 }
 
+function decodeJwtExpSeconds(token: string): number | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(base64)) as { exp?: unknown };
+    return typeof payload.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldAutoLogoutOn401(path: string, hasToken: boolean): boolean {
+  if (!hasToken) return false;
+  if (path.startsWith("/auth/login") || path.startsWith("/auth/register")) return false;
+  if (path.startsWith("/auth/phone/")) return false;
+  return true;
+}
+
 function formatApiErrorBody(text: string, status: number): string {
   const trimmed = (text || "").trim();
   if (!trimmed) return "Something went wrong. Please try again.";
@@ -1312,6 +1331,7 @@ export function AppClient({
       : "contacts"
   ) as DashboardSection;
   const [token, setToken] = useState(() => (typeof window !== "undefined" ? window.localStorage.getItem("auth_token") || "" : ""));
+  const sessionExpiredHandledRef = useRef(false);
   const [email, setEmail] = useState(() => (typeof window !== "undefined" ? window.localStorage.getItem("auth_email") || "" : ""));
   const [password, setPassword] = useState("");
   const [registerPhone, setRegisterPhone] = useState("");
@@ -1660,6 +1680,41 @@ export function AppClient({
     }
   }, [token]);
 
+  const handleSessionExpired = useCallback(
+    (message = "Your session has expired. Please log in again.") => {
+      if (sessionExpiredHandledRef.current) return;
+      sessionExpiredHandledRef.current = true;
+      setToken("");
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem("auth_session_message", message);
+      }
+      router.push("/login");
+    },
+    [router]
+  );
+
+  useEffect(() => {
+    sessionExpiredHandledRef.current = false;
+    if (!token) return;
+    const exp = decodeJwtExpSeconds(token);
+    if (!exp) return;
+    const msUntilExp = exp * 1000 - Date.now();
+    if (msUntilExp <= 0) {
+      handleSessionExpired();
+      return;
+    }
+    const timer = window.setTimeout(() => handleSessionExpired(), msUntilExp);
+    return () => window.clearTimeout(timer);
+  }, [token, handleSessionExpired]);
+
+  useEffect(() => {
+    if (token || mode !== "auth") return;
+    const message = typeof window !== "undefined" ? window.sessionStorage.getItem("auth_session_message") : null;
+    if (!message) return;
+    window.sessionStorage.removeItem("auth_session_message");
+    flash("authLogin", message, "error");
+  }, [token, mode, flash]);
+
   useEffect(() => {
     if (email) {
       window.localStorage.setItem("auth_email", email);
@@ -1888,6 +1943,9 @@ export function AppClient({
     const response = await fetch(`${API_BASE}${path}`, options);
     if (!response.ok) {
       const text = await response.text();
+      if (response.status === 401 && shouldAutoLogoutOn401(path, Boolean(token))) {
+        handleSessionExpired();
+      }
       throw new Error(formatApiErrorBody(text, response.status));
     }
     return (await response.json()) as T;
@@ -1897,6 +1955,9 @@ export function AppClient({
     const response = await fetch(`${API_BASE}${path}`, options);
     if (!response.ok) {
       const text = await response.text();
+      if (response.status === 401 && shouldAutoLogoutOn401(path, Boolean(token))) {
+        handleSessionExpired();
+      }
       throw new Error(formatApiErrorBody(text, response.status));
     }
   }
@@ -3441,6 +3502,7 @@ export function AppClient({
   }
 
   function handleLogout() {
+    sessionExpiredHandledRef.current = false;
     setToken("");
     router.push("/login");
   }
@@ -5731,16 +5793,18 @@ export function AppClient({
                           (IST) · {metaPricingData.granularity}
                         </p>
                         <div className="grid gap-3 sm:grid-cols-2">
-                          <div className="rounded-xl border border-zinc-600 bg-white p-4">
+                          <div className="rounded-xl border border-zinc-600 bg-zinc-800/40 p-4">
                             <p className="text-xs font-medium text-zinc-500">Approx. total cost (sum of buckets)</p>
-                            <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
+                            <p className="mt-1 text-2xl font-semibold tabular-nums text-crm-accent">
                               {formatMetaInr(metaPricingData.summary_total_cost)}
                             </p>
                             <p className="mt-1 text-[11px] text-zinc-400">Indian Rupees (INR)</p>
                           </div>
-                          <div className="rounded-xl border border-zinc-600 bg-white p-4">
+                          <div className="rounded-xl border border-zinc-600 bg-zinc-800/40 p-4">
                             <p className="text-xs font-medium text-zinc-500">Delivered volume (summed)</p>
-                            <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">{metaPricingData.summary_total_volume}</p>
+                            <p className="mt-1 text-2xl font-semibold tabular-nums text-zinc-100">
+                              {metaPricingData.summary_total_volume}
+                            </p>
                             <p className="mt-1 text-[11px] text-zinc-400">Message delivery counts in returned rows</p>
                           </div>
                         </div>
